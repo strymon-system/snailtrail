@@ -1,0 +1,15 @@
+# Development source repos
+bazel/
+bazel-*-installer-*-*.sh
+ImageClassification/
+tensorflow/
+
+# Large datasets
+mnist/train-images-idx3-ubyte.gz
+mnist/train-labels-idx1-ubyte.gz
+mnist/t10k-images-idx3-ubyte.gz
+mnist/t10k-labels-idx1-ubyte.gz
+
+# Local-only files
+.envrc
+*.pyc

@@ -1,0 +1,16 @@
+[package]
+name = "spark-parser"
+version = "0.1.0"
+
+[dependencies]
+env_logger = "0.4.2"
+json = "0.11.6"
+log = "0.3.7"
+getopts = "0.2"
+
+[dependencies.logformat]
+path = "../logformat/rust"
+
+[replace."timely_communication:0.1.8"]
+git = "ssh://git@gitlab.inf.ethz.ch/PROJECT-STRYMON/timely-dataflow.git"
+branch = "0.1.7"

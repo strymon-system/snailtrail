@@ -1,0 +1,4 @@
+*.dot
+venv
+test
+results

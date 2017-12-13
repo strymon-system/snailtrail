@@ -1,0 +1,21 @@
+[package]
+name = "logformat"
+version = "0.1.0"
+
+[dependencies]
+rmp = "^0.8"
+enum-primitive-derive = "^0.1"
+num-traits = "^0.1"
+abomonation = "0.4"
+json = "0.11.12"
+abomonation_derive = "0.2.3"
+clap = "^2.29"
+
+[dev-dependencies]
+rmp-serde = "0.13.7"
+serde = "1.0"
+serde_derive = "1.0"
+quick-protobuf = "0.6.0"
+byteorder = "1.2"
+protobuf = "1.4.3"
+

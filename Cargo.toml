@@ -1,0 +1,7 @@
+[workspace]
+
+members = ["snailtrail", "logformat/rust", "pag-construction", "tensorflow/tensorflow-parser"]
+
+[profile.release]
+debug = true
+

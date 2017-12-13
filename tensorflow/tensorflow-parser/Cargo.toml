@@ -1,0 +1,14 @@
+[package]
+name = "tensorflow-parser"
+version = "0.1.0"
+
+[dependencies]
+env_logger = "0.4.2"
+getopts = "0.2"
+json = "0.11.6"
+log = "0.3.7"
+regex = "0.2.1"
+
+[dependencies.logformat]
+version = "0.1.0"
+path = "../../logformat/rust"
