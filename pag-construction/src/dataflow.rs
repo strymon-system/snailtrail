@@ -56,7 +56,6 @@ pub struct Config {
     pub write_pag_dot: bool,
     pub write_pag_msgpack: bool,
     pub insert_waiting_edges: bool,
-    pub spark_driver_hack: bool,
     pub disable_summary: bool,
     pub disable_bc: bool,
     pub waiting_message: u64,
@@ -284,8 +283,7 @@ pub fn build_dataflow<'a, A, S>
     let pag_output = stream.build_program_activity_graph(config.threshold,
                                                          config.waiting_message,
                                                          config.window_size_ns,
-                                                         config.insert_waiting_edges,
-                                                         config.spark_driver_hack);
+                                                         config.insert_waiting_edges);
 
     let probe_pag = pag_output.filter(|_| false).exchange(|_| 0).probe();
     // Dump all program activities to the console for debugging

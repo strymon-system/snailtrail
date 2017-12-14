@@ -102,7 +102,7 @@ class ProcessExecuter(object):
         return subprocess.Popen([str(c) for c in command if c is not None], **kwargs)
 
 @auto_str
-class StaticConfiguration(namedtuple('StaticConfigurationBase', ['infiles', 'outdir', 'no_insert_waiting', 'message_delay', 'disable_summary', 'disable_bc', 'spark_driver_hack', 'name', 'waiting_message'])):
+class StaticConfiguration(namedtuple('StaticConfigurationBase', ['infiles', 'outdir', 'no_insert_waiting', 'message_delay', 'disable_summary', 'disable_bc', 'name', 'waiting_message'])):
     def __new__(cls, *args, **kwargs):
         return super(StaticConfiguration, cls).__new__(cls, *args, **kwargs)
 
@@ -154,8 +154,6 @@ class Benchmark(object):
                        ]
             if self.static_config.no_insert_waiting:
                 command.append('--no-insert-waiting')
-            if self.static_config.spark_driver_hack:
-                command.append('--spark-driver-hack')
             if self.static_config.message_delay is not None:
                 command.extend(['--message-delay', self.static_config.message_delay])
             if self.static_config.disable_summary:
@@ -724,7 +722,7 @@ if __name__ == '__main__':
             outdir = args.input
         else:
             outdir = args.outdir
-        return StaticConfiguration(args.input, outdir, args.no_insert_waiting, args.message_delay, args.disable_summary, args.disable_bc, args.spark_driver_hack, args.name, args.waiting_message)
+        return StaticConfiguration(args.input, outdir, args.no_insert_waiting, args.message_delay, args.disable_summary, args.disable_bc, args.name, args.waiting_message)
 
     def run(description, args, staticConfig):
         rb = description.create_run(staticConfig, args)
@@ -750,7 +748,6 @@ if __name__ == '__main__':
     parser.add_argument('--input', nargs='+', help='data input', required=True)
     parser.add_argument('--outdir', help='output directory')
     parser.add_argument('--no-insert-waiting', type=bool, default=False, dest='no_insert_waiting', help='insert waiting edges')
-    parser.add_argument('--spark-driver-hack', action='store_true', dest='spark_driver_hack')
     parser.add_argument('--max-workers', type=int, default=multiprocessing.cpu_count(), dest='workers_max')
     parser.add_argument('--min-workers', type=int, default=1, dest='workers_min')
     parser.add_argument('--max-threshold', type=int, default=1000000000, dest='threshold_max')

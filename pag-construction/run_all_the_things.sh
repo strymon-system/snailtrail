@@ -24,8 +24,6 @@ MD="--message-delay 100000"
 # .1s
 MW="--waiting-message 100000000"
 
-SPARK="--spark-driver-hack"
-
 HERON_PARAMS="--no-insert-waiting true"
 
 msgpack_spark_list=(
@@ -33,8 +31,8 @@ msgpack_spark_list=(
 
 for msgpack in "${msgpack_spark_list[@]}"
 do
-  ./run_benchmark.py $MODE_SUMMARY "${msgpack}" --outdir $OUTDIR      $SUMMARY_PARAMS $SPARK || exit
-  ./run_benchmark.py $MODE_SUMMARY "${msgpack}" --outdir "$OUTDIR/md" $SUMMARY_PARAMS $SPARK $MD || exit
+  ./run_benchmark.py $MODE_SUMMARY "${msgpack}" --outdir $OUTDIR      $SUMMARY_PARAMS || exit
+  ./run_benchmark.py $MODE_SUMMARY "${msgpack}" --outdir "$OUTDIR/md" $SUMMARY_PARAMS $MD || exit
 done
 
 

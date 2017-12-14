@@ -478,8 +478,7 @@ fn create_initial_pag_edges(worker_id: Worker,
 
 fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
                                        unknown_threshold: u64,
-                                       insert_waitig_edges: bool,
-                                       spark_driver_hack: bool)
+                                       insert_waitig_edges: bool)
                                        -> Vec<PagEdge> {
     // Perform another pass and splices in PAG edges with unknown activities to
     // fill any gaps and ensure the graph is connected.  Needs access to the
@@ -538,11 +537,10 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
                         }
                         Timeline::Remote(ref mut right) => {
                             // Cannot move adjacent messages, create a bridging edge
-                            // In case (i) the first event is 'Sent' and the second is 'Received' or
-                            // (ii) both events are Receieved, we should add a 'Waiting' instead of an 'Unknown' edge.
+                            // In case the first event is 'Sent' and the second is 'Received'
+                            // we should add a 'Waiting' instead of an 'Unknown' edge.
                             if right.event_type == EventType::Received {
-                                if (left.event_type == EventType::Sent || spark_driver_hack) &&
-                                   insert_waitig_edges {
+                                if left.event_type == EventType::Sent && insert_waitig_edges {
                                     edge_type = ActivityType::Waiting;
                                 }
                             }
@@ -562,10 +560,7 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
                 if let Timeline::Remote(ref mut right) = second {
                     if right.event_type == EventType::Received {
                         // we sometimes insert a waiting here.
-                        if spark_driver_hack {
-                            // always for spark
-                            edge_type = ActivityType::Waiting;
-                        } else if let Timeline::Remote(ref left) = first {
+                        if let Timeline::Remote(ref left) = first {
                             if left.event_type == EventType::Sent {
                                 // send, receive -> waiting
                                 edge_type = ActivityType::Waiting;
@@ -586,11 +581,6 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
         }
 
         if fill_gap {
-            // Only for Spark: Replace 'Unknown' activity with 'Scheduling' in the driver
-            if worker_id == 0 && edge_type == ActivityType::Unknown && spark_driver_hack {
-                edge_type = ActivityType::Scheduling;
-            }
-
             // Gap between timestamps -- indicates missing or incomplete instrumentation.
             final_timeline.push(PagEdge {
                                     source: PagNode {
@@ -640,8 +630,7 @@ trait WorkerTimelines<S: Scope> {
     fn build_worker_timelines(&self,
                               unknown_threshold: u64,
                               window_size_ns: u64,
-                              insert_waitig_edges: bool,
-                              spark_driver_hack: bool)
+                              insert_waitig_edges: bool)
                               -> Stream<S, PagOutput>;
 }
 
@@ -651,8 +640,7 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for S
     fn build_worker_timelines(&self,
                               unknown_threshold: u64,
                               window_size_ns: u64,
-                              insert_waitig_edges: bool,
-                              spark_driver_hack: bool)
+                              insert_waitig_edges: bool)
                               -> Stream<S, PagOutput> {
         let mut timelines_per_epoch = HashMap::new();
         let exchange = Exchange::new(|record: &LogRecord| record.local_worker as u64);
@@ -678,7 +666,7 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for S
 
                         let initial_timeline = create_initial_pag_edges(worker_id, raw_timeline, window_size_ns, time.time().inner);
 
-                        let final_timeline = connect_pag_and_apply_wait_analysis(initial_timeline, unknown_threshold, insert_waitig_edges, spark_driver_hack);
+                        let final_timeline = connect_pag_and_apply_wait_analysis(initial_timeline, unknown_threshold, insert_waitig_edges);
 
                         // Emits the PAG together with markers of the first/last node on each
                         // worker timeline so that the edge ranking step has a root set to start
@@ -840,8 +828,7 @@ pub trait BuildProgramActivityGraph<S: Scope> {
                                     threshold: u64,
                                     delayed_message_threshold: u64,
                                     window_size_ns: u64,
-                                    insert_waitig_edges: bool,
-                                    spark_driver_hack: bool)
+                                    insert_waitig_edges: bool)
                                     -> Stream<S, PagOutput>;
 }
 
@@ -853,8 +840,7 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
                                     threshold: u64,
                                     delayed_message_threshold: u64,
                                     window_size_ns: u64,
-                                    insert_waitig_edges: bool,
-                                    spark_driver_hack: bool)
+                                    insert_waitig_edges: bool)
                                     -> Stream<S, PagOutput> {
         let input = self;
         // Check worker timelines for completeness
@@ -906,8 +892,7 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
         let worker_timelines = worker_timeline_input
             .build_worker_timelines(threshold,
                                     window_size_ns,
-                                    insert_waitig_edges,
-                                    spark_driver_hack)
+                                    insert_waitig_edges)
             .filter(|pag| if let PagOutput::Edge(ref e) = *pag {
                         e.source.worker_id != e.destination.worker_id ||
                         e.source.timestamp < e.destination.timestamp
