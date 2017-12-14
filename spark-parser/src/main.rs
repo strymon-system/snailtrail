@@ -25,6 +25,7 @@ use json::JsonValue;
 use logformat::{LogRecord, ActivityType, EventType};
 use getopts::{Options, Matches};
 
+/// SnailTrail worker id of the Spark driver.
 const DRIVER: u32 = 0;
 
 #[derive(Debug)]
@@ -98,6 +99,36 @@ type ExecutorId = String;
 type Nanoseconds = u64;
 type Timestamp = u64; // Unix time in nanoseconds
 
+/// We do not have any instrumentation for the driver. Thus, we assume a
+/// simplistic model where it is either scheduling some tasks to be run on
+/// executors, or it is waiting for executors to finish their assigned tasks.
+#[derive(Copy, Clone, Debug)]
+enum DriverState {
+    GettingResult,
+    Scheduling,
+    Waiting,
+}
+
+/// Models the driver's SnailTrail activities. We unfortunately do not have
+/// instrumentation for the driver, and the wait-state heuristic of SnailTrail
+/// is subtly different from what we expect to see in Spark.
+#[derive(Clone, Debug)]
+pub struct Driver {
+    /// The timestamp of marks *beginning* of a driver activity. It is
+    /// implicitly finished when the next state begins.
+    state: Vec<(Timestamp, DriverState, StageId)>
+}
+
+impl Driver {
+    fn new() -> Self {
+        Driver {
+            state: Vec::new(),
+        }
+    }
+}
+
+/// Metadata about Spark executors. We currently only need it's identifier
+/// and the number of worker threads it has.
 #[derive(Clone, Debug)]
 struct Executor {
     id: ExecutorId,
@@ -116,14 +147,16 @@ impl Executor {
     }
 }
 
-// A stage which has been submitted, but we have not seen all tasks yet
+/// A stage which has been submitted, but we have not seen all tasks yet
 #[derive(Clone, Debug)]
 struct SubmittedStage {
-    /// the globally unique stage id (TODO: is this really unique?)
+    /// the globally unique stage id.
+    // TODO(swicki): id in the log file is not globally unique if there are
+    // multiple jobs in the trace.
     id: StageId,
     /// stages which calculated our RDD dependencies
     parents: Vec<StageId>,
-    /// number of tasks we expect to see for this stage (TODO: does this work with skipped tasks??)
+    /// number of tasks we expect to see for this stage
     num_tasks: usize,
 }
 
@@ -147,6 +180,8 @@ impl SubmittedStage {
     }
 }
 
+/// A stage for which we have seen all tasks, but we have not yet assigned
+/// a schedule.
 #[derive(Clone, Debug)]
 struct CompletedStage {
     id: StageId,
@@ -156,6 +191,8 @@ struct CompletedStage {
     num_tasks: usize,
 }
 
+/// A completed stage which has been scheduled. This stage contains the task
+/// schedule, as well as the set of all involved SnailTrail worker ids.
 #[derive(Clone, Debug)]
 struct ProcessedStage {
     id: StageId,
@@ -168,6 +205,9 @@ struct ProcessedStage {
     schedule: Vec<ScheduledTask>,
 }
 
+/// The internal representation of a Spark task. This more or less corresponds
+/// to `TaskInfo` class, see `INSTRUMENTATION.md` for more details about these
+/// fields.
 #[derive(Clone, Eq, PartialEq)]
 struct Task {
     stage: StageId,
@@ -232,6 +272,9 @@ impl fmt::Debug for Task {
     }
 }
 
+
+/// A wrapper around the `Task` struct which contains it's start and end time,
+/// as well as the SnailTrail worker id it was executed on.
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct ScheduledTask {
     /// information about this task known to the driver
@@ -244,6 +287,8 @@ struct ScheduledTask {
     worker_id: WorkerId,
 }
 
+/// The thread of an executor. Corresponds to a SnailTrail worker and thus
+/// contains a globally unique id.
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Thread {
     /// globally unique worker id for this thread
@@ -264,7 +309,32 @@ impl Thread {
     }
 }
 
-// TODO(swicki): make sure this really works if we have multiple independent jobs
+/// Reads in Spark log events and models the state of Spark during exeuction.
+///
+/// This struct is filled from the log events read in `SparkState::read_json`,
+/// executors and stages are added for logged events. The most crucal state
+/// reconstruction is the assignment of tasks to executor threads, since this
+/// information is not contained in the logs, but has to be inferred under the
+/// assumption that an executor thread can only ever execute one task at a time.
+/// This post-mortem "task scheduling" is implement in the `schedule_tasks`
+/// method.
+///
+/// The observed stages itself can be in one of three states, first it is
+/// `submitted`, then `completed`, and finally `processed`.
+///
+///   - When a `StageSubmitted` event is observed, it is considered a
+///     `SubmittedStage`: This means that we know about the dependencies of the
+///     stage, as well as the number of tasks we expect for this stage.
+///   - `CompletedStage`. This is a stage for which we have observed the
+///     completion event. This implies that we should have seen all the tasks
+///     of that stage. However, there might be a running sibling stage, still
+///     spawning tasks. Thus we hold off with scheduling until we reach point
+///     in the logs where there are no pending tasks (i.e. no stages are
+///     in the `submitted` state)
+///   - `ProcessedStage`: A `processed` stage is a completed stage with an
+///      assigned task schedule, i.e. we know all the workers involved for the
+///      computation of the stage.
+// TODO(swicki): This currently assumes a single job.
 #[derive(Debug)]
 struct SparkState {
     /// list of currently available executors
@@ -279,6 +349,8 @@ struct SparkState {
     pub processed: HashMap<StageId, ProcessedStage>,
     /// stages which were never scheduled
     pub skipped: HashSet<StageId>,
+    /// state of the driver (for up until the last task in `processed`)
+    pub driver: Driver,
 
     /// tasks of stages which have been submitted or completed, but not yet processed
     task_queue: Vec<Task>,
@@ -291,6 +363,11 @@ struct SparkState {
 }
 
 impl SparkState {
+    /// Initalize an empty, idle Spark cluster. Use `read_json` to populate it.
+    ///
+    /// See the crate README for more information about the `delay_split`
+    /// and `default_cores` arguments. They correspond to the `--delay-split`
+    /// and `--executor-cores` command-line arguments.
     fn new(delay_split: f64, default_cores: Option<usize>) -> Self {
         SparkState {
             executors: HashMap::new(),
@@ -299,6 +376,7 @@ impl SparkState {
             processed: HashMap::new(),
             skipped: HashSet::new(),
             threads: HashMap::new(),
+            driver: Driver::new(),
             task_queue: Vec::new(),
             prev_worker_id: DRIVER,
             default_executor_cores: default_cores,
@@ -338,7 +416,7 @@ impl SparkState {
         for parent in &stage.parents {
             // we check self.processed instead of self.completed, since any
             // stage that has been completed but not processed must run in
-            // parallel to this newly submitted stage, so it cannot be a 
+            // parallel to this newly submitted stage, so it cannot be a
             // parent
             if !self.processed.contains_key(parent) {
                 self.skipped.insert(*parent);
@@ -355,7 +433,7 @@ impl SparkState {
         assert!(!self.skipped.contains(&id));
         assert!(submission_ts < completion_ts, "invalid stage completion time");
 
-        let stage = self.submitted.remove(&id).unwrap();       
+        let stage = self.submitted.remove(&id).unwrap();
         let completed = CompletedStage {
             id: stage.id,
             parents: stage.parents,
@@ -395,6 +473,12 @@ impl SparkState {
         // thread on the executor the task was running.
         self.task_queue.sort_by_key(|task| task.launch_ts);
 
+        // assert that we do not break the already inferred driver state
+        assert!(
+            self.task_queue.first().map(|task| task.launch_ts) >
+            self.driver.state.last().map(|&(ts, _, _)| ts)
+        );
+
         // for each completed stage, we want to keep track of which workers
         // were involved for the computation
         let mut stages: HashMap<StageId, ProcessedStage> = 
@@ -412,6 +496,9 @@ impl SparkState {
             (id, processed)
         }).collect();
 
+        // indicates the *end* of certain driver states
+        let mut driver_ending_state: Vec<(Timestamp, DriverState, StageId)> = Vec::new();
+
         // now schedule all these tasks that were executed concurrently on
         // the available threads
         for task in self.task_queue.drain(..) {
@@ -423,6 +510,18 @@ impl SparkState {
             // event. we currently just do a split according to a configurable ratio,
             // i.e. the --delay-split command line argument
             let shipping_delay = (self.delay_split * task.scheduler_delay() as f64) as u64;
+
+            // indicate that the driver was scheduling before launching the task
+            let id = stage.id;
+            let send_ts = task.launch_ts;
+            let done_ts = task.finish_ts;
+            driver_ending_state.push((send_ts, DriverState::Scheduling, id));
+            if let Some(recv_ts) = task.getting_result_ts {
+                driver_ending_state.push((recv_ts, DriverState::Waiting, id));
+                driver_ending_state.push((done_ts, DriverState::GettingResult, id));
+            } else {
+                driver_ending_state.push((done_ts, DriverState::Waiting, id));
+            }
 
             // now calculate the start & end time *on the executor thread*
             let task_duration = task.executor_duration();
@@ -461,6 +560,23 @@ impl SparkState {
         }
         
         self.processed.extend(stages);
+
+        // update the driver state based on sends and receives, note that we
+        // only know the end of the activity
+        driver_ending_state.sort_by_key(|&(ts, _, _)| ts);
+        for pair in driver_ending_state.windows(2) {
+            let starting_ts = pair[0].0;
+            let (_, ending_state, stage) = pair[1];
+            // translate the ending state into a starting state
+            self.driver.state.push((starting_ts, ending_state, stage));
+        }
+
+        // at the end of a processed state, the driver cannot be waiting, as
+        // there are no pending tasks running, so we need to open a scheduling
+        // state
+        if let Some(&(last_ts, _, _)) = driver_ending_state.last() {
+            self.driver.state.push((last_ts, DriverState::Scheduling, 0));
+        }
 
         assert!(self.task_queue.is_empty());
         assert!(self.completed.is_empty());
@@ -684,6 +800,20 @@ impl SparkState {
     fn write_msgpack<W: Write>(&self, writer: W, draw_shuffle_edges: bool) -> Result<(), Error> {
         let mut logwriter = LogWriter::new(writer);
 
+        // emit worker local activities for driver
+        for pair in self.driver.state.windows(2) {
+            let (start_ts, state, stage) = pair[0];
+            let (end_ts, _, _) = pair[1];
+
+            let duration = end_ts - start_ts;
+            let activity = match state {
+                DriverState::Waiting => ActivityType::Waiting,
+                DriverState::Scheduling => ActivityType::Scheduling,
+                DriverState::GettingResult => ActivityType::Buffer,
+            };
+            logwriter.activity(DRIVER, start_ts, duration, activity, stage)?;
+        }
+
         for stage in self.processed.values() {
             // draw task related activities, i.e. draw a control message from
             // the driver to the thread (indicating task submission), then some
@@ -726,12 +856,6 @@ impl SparkState {
                 let send_ts = scheduled.end_time;
                 let recv_ts = task.getting_result_ts.unwrap_or(task.finish_ts);
                 logwriter.control(worker, send_ts, DRIVER, recv_ts)?;
-
-                // if we have it, emit a getting result activity at the driver
-                if let Some(start) = task.getting_result_ts {
-                    let duration = task.getting_result_duration();
-                    logwriter.activity(DRIVER, start, duration, ActivityType::Buffer, op)?;
-                }
             }
 
             if draw_shuffle_edges {
