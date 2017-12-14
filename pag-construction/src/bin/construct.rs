@@ -98,9 +98,6 @@ fn main() {
         .arg(Arg::with_name("no-insert-waiting")
             .help("Do not nsert waiting edges but use unknown for all gaps")
             .long("no-insert-waiting"))
-        .arg(Arg::with_name("spark-driver-hack")
-            .help("Replace Unknown on worker 0 with Scheduling")
-            .long("spark-driver-hack"))
         .arg(Arg::with_name("no-summary")
             .help("Do not compute summaries")
             .long("no-summary"))
@@ -152,7 +149,6 @@ fn main() {
         write_pag_dot: matches.is_present("pag-dot"),
         write_pag_msgpack: matches.is_present("pag-msgpack"),
         insert_waiting_edges: !matches.is_present("no-insert-waiting"),
-        spark_driver_hack: matches.is_present("spark-driver-hack"),
         disable_summary: matches.is_present("no-summary"),
         disable_bc: matches.is_present("no-bc"),
         waiting_message: u64::from_str(matches.value_of("waiting-message").unwrap_or("0"))
