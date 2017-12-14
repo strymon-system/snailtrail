@@ -441,9 +441,9 @@ impl SparkState {
             submission_ts: submission_ts,
             completion_ts: completion_ts,
         };
-        
+
         self.completed.insert(stage.id, completed);
-        
+
         // if there are no other stages currently running, schedule what
         // we have right now
         if self.submitted.is_empty() {
@@ -481,7 +481,7 @@ impl SparkState {
 
         // for each completed stage, we want to keep track of which workers
         // were involved for the computation
-        let mut stages: HashMap<StageId, ProcessedStage> = 
+        let mut stages: HashMap<StageId, ProcessedStage> =
             self.completed.drain().map(|(id, stage)| {
 
             let processed = ProcessedStage {
@@ -502,7 +502,7 @@ impl SparkState {
         // now schedule all these tasks that were executed concurrently on
         // the available threads
         for task in self.task_queue.drain(..) {
-            let ref mut stage = stages.get_mut(&task.stage).expect("unkown stage");
+            let ref mut stage = stages.get_mut(&task.stage).expect("unknown stage");
 
             // unfortunately, we do not know how to split the scheduler delay
             // into the time it takes to ship the task to the executor, and the
@@ -531,9 +531,9 @@ impl SparkState {
             info!("scheduling {:#?}", task);
 
             // get the threads for the executor the task was scheduled on
-            let available = self.threads.get_mut(&task.executor).expect("unkown executor");
+            let available = self.threads.get_mut(&task.executor).expect("unknown executor");
             // find the most recently used thread
-            let mut thread = available.iter_mut()
+            let thread = available.iter_mut()
                 // ignore threads which are still busy
                 .filter(|t| t.busy_until < start_time)
                 // find the most recently used thread
@@ -558,7 +558,7 @@ impl SparkState {
 
             stage.schedule.push(scheduled_task);
         }
-        
+
         self.processed.extend(stages);
 
         // update the driver state based on sends and receives, note that we
@@ -616,7 +616,7 @@ impl Task {
         let launch_time = taskinfo["Launch Time"].parse_u64()? * 1_000_000; // ms -> ns
         let finish_time = taskinfo["Finish Time"].parse_u64()? * 1_000_000; // ms -> ns
 
-        let getting_result_time = taskinfo["Getting Result Time"].parse_u64()?; 
+        let getting_result_time = taskinfo["Getting Result Time"].parse_u64()?;
         let getting_result_time = if getting_result_time > 0 {
             Some(getting_result_time * 1_000_000) // ms -> ns
         } else {
@@ -675,9 +675,9 @@ impl<W: Write> LogWriter<W> {
         }
     }
 
-    fn communication(&mut self, 
-        sender: u32, send_ts: Timestamp, 
-        receiver: u32, recv_ts: Timestamp, 
+    fn communication(&mut self,
+        sender: u32, send_ts: Timestamp,
+        receiver: u32, recv_ts: Timestamp,
         activity: ActivityType) -> io::Result<()>
     {
         let tx = LogRecord {
@@ -703,24 +703,24 @@ impl<W: Write> LogWriter<W> {
         self.sequence_no += 1;
 
         tx.write(&mut self.writer)?;
-        rx.write(&mut self.writer)     
+        rx.write(&mut self.writer)
     }
 
-    pub fn data(&mut self, 
-        sender: u32, send_ts: Timestamp, 
+    pub fn data(&mut self,
+        sender: u32, send_ts: Timestamp,
         receiver: u32, recv_ts: Timestamp) -> io::Result<()>
     {
         self.communication(sender, send_ts, receiver, recv_ts, ActivityType::DataMessage)
     }
 
-    pub fn control(&mut self, 
-        sender: u32, send_ts: Timestamp, 
+    pub fn control(&mut self,
+        sender: u32, send_ts: Timestamp,
         receiver: u32, recv_ts: Timestamp) -> io::Result<()>
     {
         self.communication(sender, send_ts, receiver, recv_ts, ActivityType::ControlMessage)
     }
-    
-    pub fn activity(&mut self, worker: u32, start: Timestamp, duration: Nanoseconds, 
+
+    pub fn activity(&mut self, worker: u32, start: Timestamp, duration: Nanoseconds,
         activity: ActivityType, operator: u32) -> io::Result<()>
     {
         let start_event = LogRecord {
@@ -825,7 +825,7 @@ impl SparkState {
                 let worker = scheduled.worker_id;
 
                 // send task from driver to executor thread
-                let send_ts = task.launch_ts; 
+                let send_ts = task.launch_ts;
                 let recv_ts = scheduled.start_time;
                 logwriter.control(DRIVER, send_ts, worker, recv_ts)?;
 
