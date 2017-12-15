@@ -5,7 +5,7 @@ This project contains of several components which build on top of one another.  
 | Crate    | Description |
 | -------- | ----------- |
 | `logformat` | Definitions of core data types and serialization of traces (in Rust, Java). |
-| `spark-parser` | Prepossesses Spark driver and executor logs and re-writes timings into our intermediate representation. |
+| `spark-parser` | Preprocesses Spark driver and executor logs and re-writes timings into our intermediate representation. |
 | `pag-construction` | Constructs the Program Activity Graph (PAG) from a flat stream of events which denote the start/end of computation and communication. Also has scripts to generate various plots. |
 | `snailtrail` | Calculates a ranking for PAG edges by computing how many times an edge appears in the set of all-pairs shortest paths. |
 
