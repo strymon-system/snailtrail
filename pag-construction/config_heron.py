@@ -107,7 +107,7 @@ class Experiment(run_benchmark.Plotter):
         # Join summary with `worker_to_operator` to add `operator_dst` column
         summary_dst_operator = summaries.join(worker_to_operator, on='dst', rsuffix='_dst')
 
-        d = self.group_summaries(summaries, ['operator',], ['normalized_count_inside_epoch'], None, None, message_filter, False, op_name)
+        d = self.group_summaries(summaries, ['operator',], ['crosses'], None, None, message_filter, False, op_name)
         self.plot(d, titles=["Rate"], normalized=False, kind='line', stacked=False, sharey=True)
 
         d = self.group_summaries(summaries, ['src', 'dst', 'operator'], ['count'], None, None, message_filter, False, None)

@@ -228,7 +228,6 @@ class BenchmarkParser(object):
             # Divide weight by window size
             summaries['normalized_weight'] = summaries['weight'] / window_ns
             summaries['normalized_count'] = summaries['count'] / float(configuration.window)
-            summaries['normalized_count_inside_epoch'] = summaries['count_inside_epoch'] / float(configuration.window)
         # normalize epoch number
         epochs['index'] -= epoch_offset
         # rename index column to epoch

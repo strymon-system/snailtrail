@@ -68,7 +68,6 @@ struct Summary<T: Abomonation> {
     weighted_bc: T,
     weight: u64,
     count: u64,
-    count_inside_epoch: u64,
 }
 
 /// Trait defining `from` similarly to `From` but allowed to lose precision.
@@ -107,7 +106,6 @@ impl<T: Abomonation + std::ops::Add<Output = T> + Copy> std::ops::AddAssign for 
             weighted_bc: self.weighted_bc + other.weighted_bc,
             weight: self.weight + other.weight,
             count: self.count + other.count,
-            count_inside_epoch: self.count_inside_epoch + other.count_inside_epoch,
         }
     }
 }
@@ -517,6 +515,17 @@ pub fn build_dataflow<'a, A, S>
                     .give_iterator(data.drain(..)
                                        .map(|(edge, bc)| {
                         let w = edge.weight();
+                        let window_size_ns = config.window_size_ns;
+                        let window_start_time = time.time().inner;
+                        let crosses_start = edge.source_timestamp() == window_start_time * window_size_ns - 1;
+                        let crosses_end = edge.destination_timestamp() ==
+                            window_start_time * window_size_ns + window_size_ns;
+                        let crosses = match (crosses_start, crosses_end) {
+                            (true, true) => 'B',
+                            (true, false) => 'S',
+                            (false, true) => 'E',
+                            (false, false) => 'N',
+                        };
                         let edge_type = match edge {
                             PagOutput::Edge(ref e) => {
                                 (e.edge_type as u8,
@@ -526,26 +535,16 @@ pub fn build_dataflow<'a, A, S>
                                  } else {
                                      ActivityWorkers::Remote(e.source.worker_id,
                                                              e.destination.worker_id)
-                                 })
+                                 },
+                                 crosses)
                             }
                             et => panic!("Unknown input: {:?}", et),
                         };
-                        let window_size_ns = config.window_size_ns;
-                        let window_start_time = time.time().inner;
-                        let crosses_window_boundary =
-                            if edge.source_timestamp() == window_start_time * window_size_ns - 1 ||
-                               edge.destination_timestamp() ==
-                               window_start_time * window_size_ns + window_size_ns {
-                                1
-                            } else {
-                                0
-                            };
                         let summary = Summary {
                             weight: w,
                             bc: bc,
                             weighted_bc: bc * bc.same_type(ImpreciseFrom::from(w)),
                             count: 1,
-                            count_inside_epoch: crosses_window_boundary,
                         };
                         (edge_type, summary)
                     }));
@@ -557,11 +556,11 @@ pub fn build_dataflow<'a, A, S>
                                                  |key| hash_code(key));
 
         if index == 0 {
-            println!("# SUMMARY epoch,activity,operator,src,dst,bc,weighted_bc,count,weight,count_inside_epoch",);
+            println!("# SUMMARY epoch,activity,operator,src,dst,crosses,bc,weighted_bc,count,weight",);
         }
         summary_triples
             .exchange(|_| 0)
-            .inspect_batch(move |ts, output| for &((activity_type, operator_id, ref workers),
+            .inspect_batch(move |ts, output| for &((activity_type, operator_id, ref workers, crosses),
                                                    ref summary) in output {
                                let worker_csv = match *workers {
                                    ActivityWorkers::Local(w_id) => format!("{},{}", w_id, w_id),
@@ -572,11 +571,11 @@ pub fn build_dataflow<'a, A, S>
                                                   activity_type,
                                                   operator_id,
                                                   worker_csv,
+                                                  crosses,
                                                   summary.bc,
                                                   summary.weighted_bc,
                                                   summary.count,
-                                                  summary.weight,
-                                                  summary.count_inside_epoch);
+                                                  summary.weight);
 
                                println!("SUMMARY {}", data.to_string());
                            })
@@ -596,7 +595,6 @@ pub fn build_dataflow<'a, A, S>
              bc: From::from(1u8),
              weighted_bc: w,
              count: 1,
-             count_inside_epoch: 0,
          })
     });
     let sp_summary =

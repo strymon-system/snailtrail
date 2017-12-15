@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import argparse
 import inspect
@@ -65,8 +65,10 @@ class Execution(object):
         with open(self.filename(), 'r') as txt:
             for line in txt:
                 if line.startswith("SUMMARY"):
-                    # epoch,activity,operator,src,dst,bc,weighted_bc,count,weight
-                    epoch, activity, operator, worker, dst, bc, weighted_bc, count, weight = map(int, line.split(' ')[1].split(',')[0:9])
+                    # epoch,activity,operator,src,dst,crosses,bc,weighted_bc,count,weight
+                    epoch, activity, operator, worker, dst, crosses, bc, weighted_bc, count, weight = line.split(' ')[1].split(',')[0:10]
+                    epoch, activity, operator, worker, dst, bc, weighted_bc, count, weight = \
+                        map(int, [epoch, activity, operator, worker, dst, bc, weighted_bc, count, weight])
                     epoch_data = data.setdefault(epoch, defaultdict(lambda: 0))
                     epoch_data[(ACTIVITIES[activity], operator)] += bc
 
