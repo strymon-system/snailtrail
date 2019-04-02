@@ -7,7 +7,6 @@
 // except according to those terms.
 
 /// Small binary to decode a program activity log from MsgPack format into text
-
 extern crate logformat;
 
 use std::fs::File;

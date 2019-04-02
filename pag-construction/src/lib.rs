@@ -17,22 +17,22 @@ extern crate time;
 extern crate timely;
 extern crate timely_communication;
 
-use logformat::{LogRecord, ActivityType, EventType, Worker, Timestamp, OperatorId};
+use logformat::{ActivityType, EventType, LogRecord, OperatorId, Timestamp, Worker};
 
-use snailtrail::graph::{Partitioning, SrcDst};
 use snailtrail::exploration::Capacity;
+use snailtrail::graph::{Partitioning, SrcDst};
 
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use timely::ExchangeData;
+use snailtrail::hash_code;
 use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::aggregation::Aggregate;
-use timely::dataflow::operators::{Concat, Filter, Map, Unary, Partition};
+use timely::dataflow::operators::{Concat, Filter, Map, Partition, Unary};
 use timely::dataflow::{Scope, Stream};
 use timely::progress::nested::product::Product;
 use timely::progress::timestamp::RootTimestamp;
-use snailtrail::hash_code;
+use timely::ExchangeData;
 
 pub mod dataflow;
 pub mod input;
@@ -133,40 +133,35 @@ impl PagOutput {
     pub fn destination(&self) -> &PagNode {
         match *self {
             PagOutput::Edge(ref e) => &e.destination,
-            PagOutput::StartNode(ref e) |
-            PagOutput::EndNode(ref e) => e,
+            PagOutput::StartNode(ref e) | PagOutput::EndNode(ref e) => e,
         }
     }
 
     pub fn destination_worker(&self) -> Worker {
         match *self {
             PagOutput::Edge(ref e) => e.destination.worker_id,
-            PagOutput::StartNode(ref e) |
-            PagOutput::EndNode(ref e) => e.worker_id,
+            PagOutput::StartNode(ref e) | PagOutput::EndNode(ref e) => e.worker_id,
         }
     }
 
     pub fn source_timestamp(&self) -> Timestamp {
         match *self {
             PagOutput::Edge(ref e) => e.source.timestamp,
-            PagOutput::StartNode(ref e) |
-            PagOutput::EndNode(ref e) => e.timestamp,
+            PagOutput::StartNode(ref e) | PagOutput::EndNode(ref e) => e.timestamp,
         }
     }
 
     pub fn destination_timestamp(&self) -> Timestamp {
         match *self {
             PagOutput::Edge(ref e) => e.destination.timestamp,
-            PagOutput::StartNode(ref e) |
-            PagOutput::EndNode(ref e) => e.timestamp,
+            PagOutput::StartNode(ref e) | PagOutput::EndNode(ref e) => e.timestamp,
         }
     }
 
     pub fn is_message(&self) -> bool {
         match *self {
             PagOutput::Edge(ref e) => e.is_message(),
-            PagOutput::StartNode(_) |
-            PagOutput::EndNode(_) => false,
+            PagOutput::StartNode(_) | PagOutput::EndNode(_) => false,
         }
     }
 }
@@ -175,15 +170,12 @@ pub struct TraverseNoWaiting;
 impl<V: From<u8>> Capacity<PagOutput, V> for TraverseNoWaiting {
     fn apply_capacity(edge: &PagOutput, value: V) -> V {
         match *edge {
-            PagOutput::StartNode(_) |
-            PagOutput::EndNode(_) => From::from(0),
-            PagOutput::Edge(ref e) => {
-                match e.traverse {
-                    TraversalType::Undefined => panic!("Undefined traversal capacity!"),
-                    TraversalType::Block => From::from(0),
-                    TraversalType::Unbounded => value,
-                }
-            }
+            PagOutput::StartNode(_) | PagOutput::EndNode(_) => From::from(0),
+            PagOutput::Edge(ref e) => match e.traverse {
+                TraversalType::Undefined => panic!("Undefined traversal capacity!"),
+                TraversalType::Block => From::from(0),
+                TraversalType::Unbounded => value,
+            },
         }
     }
 }
@@ -192,15 +184,12 @@ pub struct TraverseWaitingOne;
 impl<V: From<u8>> Capacity<PagOutput, V> for TraverseWaitingOne {
     fn apply_capacity(edge: &PagOutput, value: V) -> V {
         match *edge {
-            PagOutput::StartNode(_) |
-            PagOutput::EndNode(_) => From::from(0),
-            PagOutput::Edge(ref e) => {
-                match e.traverse {
-                    TraversalType::Undefined => panic!("Undefined traversal capacity!"),
-                    TraversalType::Block => From::from(1),
-                    TraversalType::Unbounded => value,
-                }
-            }
+            PagOutput::StartNode(_) | PagOutput::EndNode(_) => From::from(0),
+            PagOutput::Edge(ref e) => match e.traverse {
+                TraversalType::Undefined => panic!("Undefined traversal capacity!"),
+                TraversalType::Block => From::from(1),
+                TraversalType::Unbounded => value,
+            },
         }
     }
 }
@@ -210,7 +199,7 @@ impl<V: From<u8>> Capacity<PagOutput, V> for TraverseWaitingOne {
 // worker.
 #[derive(Abomonation, Clone, Debug)]
 enum Timeline {
-    Local(PagEdge), // full-edge: computation
+    Local(PagEdge),    // full-edge: computation
     Remote(LogRecord), // half-edge: communication
 }
 
@@ -252,58 +241,63 @@ trait MapEpoch<S: Scope, D: ExchangeData> {
 }
 
 impl<S: Scope, D: ExchangeData> MapEpoch<S, D> for Stream<S, D>
-    where S::Timestamp: Hash
+where
+    S::Timestamp: Hash,
 {
     fn map_epoch<F: Fn(&mut Vec<D>) + 'static>(&self, logic: F) -> Stream<S, D> {
         let mut accums = HashMap::new();
-        self.unary_notify(Pipeline,
-                          "MapEpoch",
-                          vec![],
-                          move |input, output, notificator| {
-            input.for_each(|time, data| {
-                               accums
-                                   .entry(time.time().clone())
-                                   .or_insert_with(Vec::new)
-                                   .extend_from_slice(data);
-                               notificator.notify_at(time);
-                           });
+        self.unary_notify(
+            Pipeline,
+            "MapEpoch",
+            vec![],
+            move |input, output, notificator| {
+                input.for_each(|time, data| {
+                    accums
+                        .entry(time.time().clone())
+                        .or_insert_with(Vec::new)
+                        .extend_from_slice(data);
+                    notificator.notify_at(time);
+                });
 
-            notificator.for_each(|time, _count, _notify| if let Some(mut accum) =
-                accums.remove(time.time()) {
-                                     logic(&mut accum);
-                                     output.session(&time).give_iterator(accum.drain(..));
-                                 });
-        })
+                notificator.for_each(|time, _count, _notify| {
+                    if let Some(mut accum) = accums.remove(time.time()) {
+                        logic(&mut accum);
+                        output.session(&time).give_iterator(accum.drain(..));
+                    }
+                });
+            },
+        )
     }
 }
 
-fn create_initial_pag_edges(worker_id: Worker,
-                            mut timeline: Vec<LogRecord>,
-                            window_size_ns: u64,
-                            window_start_time: Timestamp)
-                            -> Vec<Timeline> {
+fn create_initial_pag_edges(
+    worker_id: Worker,
+    mut timeline: Vec<LogRecord>,
+    window_size_ns: u64,
+    window_start_time: Timestamp,
+) -> Vec<Timeline> {
     // We insert two records just before and after the window boundaries.
     // This will cause the analysis later on to include potential gaps between
     // the window boundary and first/last activity in the wait state analysis
     // to insert Unknown/Waiting activities accordingly.
     timeline.push(LogRecord {
-                      timestamp: window_start_time * window_size_ns - 1,
-                      local_worker: worker_id,
-                      activity_type: ActivityType::Unknown,
-                      event_type: EventType::Bogus,
-                      correlator_id: None,
-                      remote_worker: None,
-                      operator_id: None,
-                  });
+        timestamp: window_start_time * window_size_ns - 1,
+        local_worker: worker_id,
+        activity_type: ActivityType::Unknown,
+        event_type: EventType::Bogus,
+        correlator_id: None,
+        remote_worker: None,
+        operator_id: None,
+    });
     timeline.push(LogRecord {
-                      timestamp: window_start_time * window_size_ns + window_size_ns,
-                      local_worker: worker_id,
-                      activity_type: ActivityType::Unknown,
-                      event_type: EventType::Bogus,
-                      correlator_id: None,
-                      remote_worker: None,
-                      operator_id: None,
-                  });
+        timestamp: window_start_time * window_size_ns + window_size_ns,
+        local_worker: worker_id,
+        activity_type: ActivityType::Unknown,
+        event_type: EventType::Bogus,
+        correlator_id: None,
+        remote_worker: None,
+        operator_id: None,
+    });
 
     // Sort local events by timestamp
     timeline.sort_by_key(|record| record.timestamp);
@@ -340,13 +334,12 @@ fn create_initial_pag_edges(worker_id: Worker,
 
                     // In case of two subsequent 'Start' events, this will add an edge whose endpoints have different activity types
                     new_timeline.push(Timeline::Local(PagEdge {
-                                                          source: PagNode::from(prev),
-                                                          destination:
-                                                              PagNode::from(&record.clone()),
-                                                          edge_type: top.activity_type,
-                                                          operator_id: top.operator_id,
-                                                          traverse: TraversalType::Undefined,
-                                                      }));
+                        source: PagNode::from(prev),
+                        destination: PagNode::from(&record.clone()),
+                        edge_type: top.activity_type,
+                        operator_id: top.operator_id,
+                        traverse: TraversalType::Undefined,
+                    }));
                     //assert_eq!(prev.activity_type, record.activity_type, "mismatch activity type: prev={:?}, record={:?}", prev, record);
                 }
                 // remember the current event as the last produced event
@@ -363,29 +356,25 @@ fn create_initial_pag_edges(worker_id: Worker,
                 // i.e. same type. If so, pop until it has been found
                 // Otherwise, ignore it.
                 if stack
-                       .iter()
-                       .rev()
-                       .any(|r| r.activity_type == record.activity_type) {
+                    .iter()
+                    .rev()
+                    .any(|r| r.activity_type == record.activity_type)
+                {
                     while let Some(top) = stack.pop() {
                         assert!(top.timestamp <= record.timestamp);
                         assert_eq!(top.local_worker, record.local_worker);
                         // println!("stack: {:?} top: {:?}", stack, top);
                         if top.activity_type == record.activity_type {
-
-                            let prev = last_end.unwrap_or_else(||top.clone());
+                            let prev = last_end.unwrap_or_else(|| top.clone());
                             //assert_eq!(prev.activity_type, record.activity_type, "mismatch activity type: prev={:?}, record={:?}", prev, record);
                             if prev.timestamp < record.timestamp {
                                 new_timeline.push(Timeline::Local(PagEdge {
-                                                                      source: PagNode::from(&prev),
-                                                                      destination:
-                                                                          PagNode::from(&record),
-                                                                      edge_type:
-                                                                          record.activity_type,
-                                                                      operator_id:
-                                                                          record.operator_id,
-                                                                      traverse:
-                                                                          TraversalType::Undefined,
-                                                                  }));
+                                    source: PagNode::from(&prev),
+                                    destination: PagNode::from(&record),
+                                    edge_type: record.activity_type,
+                                    operator_id: record.operator_id,
+                                    traverse: TraversalType::Undefined,
+                                }));
                             }
                             // Whatever was previously nested will be emitted as a new edge
                             // once the next activity starts (match clause above -> non-empty stack).
@@ -404,12 +393,12 @@ fn create_initial_pag_edges(worker_id: Worker,
                         last_end.unwrap()
                     };
                     new_timeline.push(Timeline::Local(PagEdge {
-                                                          source: PagNode::from(&prev),
-                                                          destination: PagNode::from(&record),
-                                                          edge_type: record.activity_type,
-                                                          operator_id: record.operator_id,
-                                                          traverse: TraversalType::Undefined,
-                                                      }));
+                        source: PagNode::from(&prev),
+                        destination: PagNode::from(&record),
+                        edge_type: record.activity_type,
+                        operator_id: record.operator_id,
+                        traverse: TraversalType::Undefined,
+                    }));
                     last_end = Some(record);
                 }
             }
@@ -422,17 +411,16 @@ fn create_initial_pag_edges(worker_id: Worker,
                     let prev = last_end.unwrap();
                     // This adds an edge whose endpoints have different activity types
                     new_timeline.push(Timeline::Local(PagEdge {
-                                                          source: PagNode::from(&prev),
-                                                          destination: PagNode::from(&record),
-                                                          edge_type: top.activity_type,
-                                                          operator_id: top.operator_id,
-                                                          traverse: TraversalType::Undefined,
-                                                      }));
+                        source: PagNode::from(&prev),
+                        destination: PagNode::from(&record),
+                        edge_type: top.activity_type,
+                        operator_id: top.operator_id,
+                        traverse: TraversalType::Undefined,
+                    }));
                 }
                 last_end = Some(record.clone());
                 communication.push(record); // This also includes Bogus records
             }
-
         }
     }
 
@@ -450,12 +438,12 @@ fn create_initial_pag_edges(worker_id: Worker,
             assert_eq!(prev.local_worker, record.local_worker);
 
             new_timeline.push(Timeline::Local(PagEdge {
-                                                  source: PagNode::from(prev),
-                                                  destination: PagNode::from(&record.clone()),
-                                                  edge_type: top.activity_type,
-                                                  operator_id: top.operator_id,
-                                                  traverse: TraversalType::Undefined,
-                                              }));
+                source: PagNode::from(prev),
+                destination: PagNode::from(&record.clone()),
+                edge_type: top.activity_type,
+                operator_id: top.operator_id,
+                traverse: TraversalType::Undefined,
+            }));
         }
     }
 
@@ -475,11 +463,11 @@ fn create_initial_pag_edges(worker_id: Worker,
     new_timeline
 }
 
-
-fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
-                                       unknown_threshold: u64,
-                                       insert_waitig_edges: bool)
-                                       -> Vec<PagEdge> {
+fn connect_pag_and_apply_wait_analysis(
+    new_timeline: Vec<Timeline>,
+    unknown_threshold: u64,
+    insert_waitig_edges: bool,
+) -> Vec<PagEdge> {
     // Perform another pass and splices in PAG edges with unknown activities to
     // fill any gaps and ensure the graph is connected.  Needs access to the
     // full set of worker activities (even remote) because the order events
@@ -565,7 +553,7 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
                                 // send, receive -> waiting
                                 edge_type = ActivityType::Waiting;
                             }
-                            // implicit else: receive, receive -> unknown
+                        // implicit else: receive, receive -> unknown
                         } else {
                             // local, receive -> waiting
                             edge_type = ActivityType::Waiting;
@@ -583,18 +571,18 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
         if fill_gap {
             // Gap between timestamps -- indicates missing or incomplete instrumentation.
             final_timeline.push(PagEdge {
-                                    source: PagNode {
-                                        timestamp: first.get_end_timestamp(),
-                                        worker_id: worker_id,
-                                    },
-                                    destination: PagNode {
-                                        timestamp: second.get_start_timestamp(),
-                                        worker_id: worker_id,
-                                    },
-                                    edge_type: edge_type,
-                                    operator_id: None,
-                                    traverse: TraversalType::Undefined,
-                                });
+                source: PagNode {
+                    timestamp: first.get_end_timestamp(),
+                    worker_id: worker_id,
+                },
+                destination: PagNode {
+                    timestamp: second.get_start_timestamp(),
+                    worker_id: worker_id,
+                },
+                edge_type: edge_type,
+                operator_id: None,
+                traverse: TraversalType::Undefined,
+            });
         }
         last_event = Some(second);
     }
@@ -606,9 +594,9 @@ fn connect_pag_and_apply_wait_analysis(new_timeline: Vec<Timeline>,
 
     // This essentially removes local edges whose start time is larger than the end time. Do we need this check?
     final_timeline.retain(|edge| {
-                              edge.source.worker_id != edge.destination.worker_id ||
-                              edge.source.timestamp < edge.destination.timestamp
-                          });
+        edge.source.worker_id != edge.destination.worker_id
+            || edge.source.timestamp < edge.destination.timestamp
+    });
 
     // Sanity check
     for window in final_timeline.windows(2) {
@@ -627,95 +615,140 @@ trait WorkerTimelines<S: Scope> {
     // program activites will be combined and how large this time interval is allowed to be.  We
     // have not tested with real traces but expect 1_000_000_000 (== 1 millisecond) to be a
     // reasonable starting value.
-    fn build_worker_timelines(&self,
-                              unknown_threshold: u64,
-                              window_size_ns: u64,
-                              insert_waitig_edges: bool)
-                              -> Stream<S, PagOutput>;
+    fn build_worker_timelines(
+        &self,
+        unknown_threshold: u64,
+        window_size_ns: u64,
+        insert_waitig_edges: bool,
+    ) -> Stream<S, PagOutput>;
 }
 
 impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for Stream<S, LogRecord>
-    where S::Timestamp: Hash
+where
+    S::Timestamp: Hash,
 {
-    fn build_worker_timelines(&self,
-                              unknown_threshold: u64,
-                              window_size_ns: u64,
-                              insert_waitig_edges: bool)
-                              -> Stream<S, PagOutput> {
+    fn build_worker_timelines(
+        &self,
+        unknown_threshold: u64,
+        window_size_ns: u64,
+        insert_waitig_edges: bool,
+    ) -> Stream<S, PagOutput> {
         let mut timelines_per_epoch = HashMap::new();
         let exchange = Exchange::new(|record: &LogRecord| record.local_worker as u64);
-        self.unary_notify(exchange, "WorkerTimelines", vec![], move |input, output, notificator| {
-            // Organize all data by time and then according to worker ID
-            input.for_each(|time, data| {
-                let epoch_slot = timelines_per_epoch.entry(*time.time())
-                    .or_insert_with(HashMap::new);
-                for record in data.drain(..) {
-                    epoch_slot.entry(record.local_worker)
-                        .or_insert_with(Vec::new)
-                        .push(record);
-                }
-                notificator.notify_at(time);
-            });
-            // Sequentially assemble the edges for each worker timeline by pairing up log records
-            notificator.for_each(|time, _count, _notify| {
-                if let Some(mut timelines) = timelines_per_epoch.remove(time.time()) {
-                    for (worker_id, raw_timeline) in timelines.drain() {
-                        // Assumption: the previous step should have already applied thresholding
-                        // (quantization) to eliminate gaps and merge log records which are in
-                        // close proximity in terms of event time.
-
-                        let initial_timeline = create_initial_pag_edges(worker_id, raw_timeline, window_size_ns, time.time().inner);
-
-                        let final_timeline = connect_pag_and_apply_wait_analysis(initial_timeline, unknown_threshold, insert_waitig_edges);
-
-                        // Emits the PAG together with markers of the first/last node on each
-                        // worker timeline so that the edge ranking step has a root set to start
-                        // its traversal from.
-                        let mut session = output.session(&time);
-                        session.give_iterator(final_timeline.first().map(|e| PagOutput::StartNode(e.source)).into_iter());
-                        session.give_iterator(final_timeline.last().map(|e| PagOutput::EndNode(e.destination)).into_iter());
-                        session.give_iterator(final_timeline.into_iter().map(PagOutput::Edge));
+        self.unary_notify(
+            exchange,
+            "WorkerTimelines",
+            vec![],
+            move |input, output, notificator| {
+                // Organize all data by time and then according to worker ID
+                input.for_each(|time, data| {
+                    let epoch_slot = timelines_per_epoch
+                        .entry(*time.time())
+                        .or_insert_with(HashMap::new);
+                    for record in data.drain(..) {
+                        epoch_slot
+                            .entry(record.local_worker)
+                            .or_insert_with(Vec::new)
+                            .push(record);
                     }
-                }
-            });
-        })
+                    notificator.notify_at(time);
+                });
+                // Sequentially assemble the edges for each worker timeline by pairing up log records
+                notificator.for_each(|time, _count, _notify| {
+                    if let Some(mut timelines) = timelines_per_epoch.remove(time.time()) {
+                        for (worker_id, raw_timeline) in timelines.drain() {
+                            // Assumption: the previous step should have already applied thresholding
+                            // (quantization) to eliminate gaps and merge log records which are in
+                            // close proximity in terms of event time.
+
+                            let initial_timeline = create_initial_pag_edges(
+                                worker_id,
+                                raw_timeline,
+                                window_size_ns,
+                                time.time().inner,
+                            );
+
+                            let final_timeline = connect_pag_and_apply_wait_analysis(
+                                initial_timeline,
+                                unknown_threshold,
+                                insert_waitig_edges,
+                            );
+
+                            // Emits the PAG together with markers of the first/last node on each
+                            // worker timeline so that the edge ranking step has a root set to start
+                            // its traversal from.
+                            let mut session = output.session(&time);
+                            session.give_iterator(
+                                final_timeline
+                                    .first()
+                                    .map(|e| PagOutput::StartNode(e.source))
+                                    .into_iter(),
+                            );
+                            session.give_iterator(
+                                final_timeline
+                                    .last()
+                                    .map(|e| PagOutput::EndNode(e.destination))
+                                    .into_iter(),
+                            );
+                            session.give_iterator(final_timeline.into_iter().map(PagOutput::Edge));
+                        }
+                    }
+                });
+            },
+        )
     }
 }
-
-
 
 /// Matches up starting and ending program activities by pairing up occurences that have a matching
 /// key.  This independently examines each epoch of the data stream (tumbling window of size 1).
 trait PairUpEvents<S: Scope> {
-    fn pair_up_events(&self,
-                      start_type: EventType,
-                      end_type: EventType,
-                      window_size_ns: u64)
-                      -> Stream<S, Timeline>;
+    fn pair_up_events(
+        &self,
+        start_type: EventType,
+        end_type: EventType,
+        window_size_ns: u64,
+    ) -> Stream<S, Timeline>;
 
-    fn pair_up_events_and_check<F>(&self,
-                                   start_type: EventType,
-                                   end_type: EventType,
-                                   window_size_ns: u64,
-                                   assert_fn: F)
-                                   -> Stream<S, Timeline>
-        where F: Fn(&LogRecord, &LogRecord) -> () + 'static;
+    fn pair_up_events_and_check<F>(
+        &self,
+        start_type: EventType,
+        end_type: EventType,
+        window_size_ns: u64,
+        assert_fn: F,
+    ) -> Stream<S, Timeline>
+    where
+        F: Fn(&LogRecord, &LogRecord) -> () + 'static;
 }
 
-impl<S: Scope<Timestamp=Product<RootTimestamp, u64>>, K: ExchangeData+Eq+Hash> PairUpEvents<S> for Stream<S, (K, LogRecord)>
-    where S::Timestamp: Hash
+impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>, K: ExchangeData + Eq + Hash> PairUpEvents<S>
+    for Stream<S, (K, LogRecord)>
+where
+    S::Timestamp: Hash,
 {
-    fn pair_up_events(&self, start_type: EventType, end_type: EventType, window_size_ns: u64) -> Stream<S, Timeline> {
-self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _recv| {
-/* no assertion */
-})
+    fn pair_up_events(
+        &self,
+        start_type: EventType,
+        end_type: EventType,
+        window_size_ns: u64,
+    ) -> Stream<S, Timeline> {
+        self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _recv| {
+            /* no assertion */
+        })
     }
 
-    fn pair_up_events_and_check<F>(&self, start_type: EventType, end_type: EventType, window_size_ns: u64, assert_fn: F) -> Stream<S, Timeline>
-        where F: Fn(&LogRecord, &LogRecord) -> () + 'static
+    fn pair_up_events_and_check<F>(
+        &self,
+        start_type: EventType,
+        end_type: EventType,
+        window_size_ns: u64,
+        assert_fn: F,
+    ) -> Stream<S, Timeline>
+    where
+        F: Fn(&LogRecord, &LogRecord) -> () + 'static,
     {
         let paired = self.aggregate::<_, (Option<LogRecord>, Vec<LogRecord>), _, _, _>(
-            move |_key, val, agg| {  // fold
+            move |_key, val, agg| {
+                // fold
                 if val.event_type == start_type {
                     assert!(agg.0.is_none(), "duplicate start event");
                     agg.0 = Some(val)
@@ -726,97 +759,108 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
                 }
             },
             |key, agg| (key, agg),
-            |key| hash_code(key)
+            |key| hash_code(key),
         );
 
-        paired.unary_notify(Pipeline, "assemble messages", vec!(), move |input, output, _| {
-            input.for_each(|time, data| {    // emit
-                let mut session = output.session(&time);
-                for (_, agg) in data.drain(..) {
-                    let ends = agg.1;
-                    match agg.0 {
-                        Some(start) => {
-                            // Is it a start w/o an end? Assume end is outside current window
-                            if ends.is_empty() && start.remote_worker.is_some() {
-                                session.give(Timeline::Local(PagEdge {
-                                    source: PagNode {
-                                        timestamp: start.timestamp,
-                                        worker_id: start.local_worker,
-                                    },
-                                    destination: PagNode {
-                                        timestamp: time.time().inner * window_size_ns + window_size_ns,
-                                        worker_id: start.remote_worker.expect("comm w/o remote worker"),
-                                    },
-                                    edge_type: start.activity_type,
-                                    operator_id: start.operator_id,
-                                    traverse: TraversalType::Undefined,
-                                }));
-                                session.give(Timeline::Remote(LogRecord {
-                                    timestamp: time.time().inner * window_size_ns + window_size_ns,
-                                    local_worker: start.remote_worker.unwrap(),
-                                    remote_worker: Some(start.local_worker),
-                                    ..start
-                                }));
-                            } else {
-                                for end in ends {
-                                    assert_eq!(start.activity_type, end.activity_type);
-                                    assert_fn(&start, &end);
-
+        paired.unary_notify(
+            Pipeline,
+            "assemble messages",
+            vec![],
+            move |input, output, _| {
+                input.for_each(|time, data| {
+                    // emit
+                    let mut session = output.session(&time);
+                    for (_, agg) in data.drain(..) {
+                        let ends = agg.1;
+                        match agg.0 {
+                            Some(start) => {
+                                // Is it a start w/o an end? Assume end is outside current window
+                                if ends.is_empty() && start.remote_worker.is_some() {
                                     session.give(Timeline::Local(PagEdge {
                                         source: PagNode {
                                             timestamp: start.timestamp,
                                             worker_id: start.local_worker,
                                         },
                                         destination: PagNode {
-                                            timestamp: end.timestamp,
-                                            worker_id: end.local_worker,
+                                            timestamp: time.time().inner * window_size_ns
+                                                + window_size_ns,
+                                            worker_id: start
+                                                .remote_worker
+                                                .expect("comm w/o remote worker"),
                                         },
                                         edge_type: start.activity_type,
                                         operator_id: start.operator_id,
                                         traverse: TraversalType::Undefined,
                                     }));
+                                    session.give(Timeline::Remote(LogRecord {
+                                        timestamp: time.time().inner * window_size_ns
+                                            + window_size_ns,
+                                        local_worker: start.remote_worker.unwrap(),
+                                        remote_worker: Some(start.local_worker),
+                                        ..start
+                                    }));
+                                } else {
+                                    for end in ends {
+                                        assert_eq!(start.activity_type, end.activity_type);
+                                        assert_fn(&start, &end);
+
+                                        session.give(Timeline::Local(PagEdge {
+                                            source: PagNode {
+                                                timestamp: start.timestamp,
+                                                worker_id: start.local_worker,
+                                            },
+                                            destination: PagNode {
+                                                timestamp: end.timestamp,
+                                                worker_id: end.local_worker,
+                                            },
+                                            edge_type: start.activity_type,
+                                            operator_id: start.operator_id,
+                                            traverse: TraversalType::Undefined,
+                                        }));
+                                    }
                                 }
                             }
-                        },
-                        // The events on either side may be missing either due to incomplete
-                        // instrumentation, lossy logging or edges which span across multiple time
-                        // windows.  For simplicity we drop these from our graph for now.
-                        //
-                        // TODO: retain spanned edges and either (i) split into two halves which are
-                        // clamped to the current PAG slice or (ii) propagate edges until they're
-// complete and we've seen both nodes and only emit then.
-// (Some(_start), None) => {println!("DEBUG end missing {:?}", _start); None},
-// (None, Some(_end)) => {println!("DEBUG start missing {:?}", _end); None},
-                        None =>  {
-                            for end in ends {
-                                session.give(Timeline::Local(PagEdge {
-                                    source: PagNode {
-                                        timestamp: time.time().inner * window_size_ns- 1,
-                                        worker_id: end.remote_worker.expect("comm w/o remote worker"),
-                                    },
-                                    destination: PagNode {
-                                        timestamp: end.timestamp,
-                                        worker_id: end.local_worker
-                                    },
-                                    edge_type: end.activity_type,
-                                    operator_id: end.operator_id,
-                                    traverse: TraversalType::Undefined,
-                                }));
-                                session.give(Timeline::Remote(LogRecord {
-                                    timestamp: time.time().inner * window_size_ns - 1,
-                                    local_worker: end.remote_worker.unwrap(),
-                                    remote_worker: Some(end.local_worker),
-                                    ..end
-                                }));
+                            // The events on either side may be missing either due to incomplete
+                            // instrumentation, lossy logging or edges which span across multiple time
+                            // windows.  For simplicity we drop these from our graph for now.
+                            //
+                            // TODO: retain spanned edges and either (i) split into two halves which are
+                            // clamped to the current PAG slice or (ii) propagate edges until they're
+                            // complete and we've seen both nodes and only emit then.
+                            // (Some(_start), None) => {println!("DEBUG end missing {:?}", _start); None},
+                            // (None, Some(_end)) => {println!("DEBUG start missing {:?}", _end); None},
+                            None => {
+                                for end in ends {
+                                    session.give(Timeline::Local(PagEdge {
+                                        source: PagNode {
+                                            timestamp: time.time().inner * window_size_ns - 1,
+                                            worker_id: end
+                                                .remote_worker
+                                                .expect("comm w/o remote worker"),
+                                        },
+                                        destination: PagNode {
+                                            timestamp: end.timestamp,
+                                            worker_id: end.local_worker,
+                                        },
+                                        edge_type: end.activity_type,
+                                        operator_id: end.operator_id,
+                                        traverse: TraversalType::Undefined,
+                                    }));
+                                    session.give(Timeline::Remote(LogRecord {
+                                        timestamp: time.time().inner * window_size_ns - 1,
+                                        local_worker: end.remote_worker.unwrap(),
+                                        remote_worker: Some(end.local_worker),
+                                        ..end
+                                    }));
+                                }
                             }
-                        },
-                    };
-                };
-            });
-        })
+                        };
+                    }
+                });
+            },
+        )
     }
 }
-
 
 /// Main entry point which converts a stream of events produced from instrumentation into a Program
 /// Activity Graph (PAG).  This method expects log records which are batched into disjoint windows
@@ -824,24 +868,27 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
 /// both ends of an activity (e.g. start/end or send/receive pairs).
 
 pub trait BuildProgramActivityGraph<S: Scope> {
-    fn build_program_activity_graph(&self,
-                                    threshold: u64,
-                                    delayed_message_threshold: u64,
-                                    window_size_ns: u64,
-                                    insert_waitig_edges: bool)
-                                    -> Stream<S, PagOutput>;
+    fn build_program_activity_graph(
+        &self,
+        threshold: u64,
+        delayed_message_threshold: u64,
+        window_size_ns: u64,
+        insert_waitig_edges: bool,
+    ) -> Stream<S, PagOutput>;
 }
 
 impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
-    where S: Scope<Timestamp = Product<RootTimestamp, u64>>,
-          S::Timestamp: Hash
+where
+    S: Scope<Timestamp = Product<RootTimestamp, u64>>,
+    S::Timestamp: Hash,
 {
-    fn build_program_activity_graph(&self,
-                                    threshold: u64,
-                                    delayed_message_threshold: u64,
-                                    window_size_ns: u64,
-                                    insert_waitig_edges: bool)
-                                    -> Stream<S, PagOutput> {
+    fn build_program_activity_graph(
+        &self,
+        threshold: u64,
+        delayed_message_threshold: u64,
+        window_size_ns: u64,
+        insert_waitig_edges: bool,
+    ) -> Stream<S, PagOutput> {
         let input = self;
         // Check worker timelines for completeness
 
@@ -849,23 +896,33 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
 
         // Step 2: pair up control and data events and add edges between worker timelines
         let communication_edges = input
-            .filter(|record| (record.activity_type == ActivityType::ControlMessage ||
-                            record.activity_type == ActivityType::DataMessage))
+            .filter(|record| {
+                (record.activity_type == ActivityType::ControlMessage
+                    || record.activity_type == ActivityType::DataMessage)
+            })
             .map(|record| {
                 let sender_id = match record.event_type {
                     EventType::Sent => record.local_worker,
                     EventType::Received => record.remote_worker.unwrap(),
-                    et =>  panic!("unexpected event type for communication record ({:?})", et),
+                    et => panic!("unexpected event type for communication record ({:?})", et),
                 };
                 // Assign key to group related message events
                 ((sender_id, record.correlator_id), record)
             })
-        // This matching logic largely duplicates the aggregation operator above but is
-        // parameterized slightly differently -> make this into a reusable operator.
-        .pair_up_events_and_check(EventType::Sent, EventType::Received, window_size_ns, |sent, recv| {
-            assert!((sent.local_worker == recv.remote_worker.unwrap()) &&
-                    (sent.remote_worker.is_none() || sent.remote_worker.unwrap() == recv.local_worker));
-        });
+            // This matching logic largely duplicates the aggregation operator above but is
+            // parameterized slightly differently -> make this into a reusable operator.
+            .pair_up_events_and_check(
+                EventType::Sent,
+                EventType::Received,
+                window_size_ns,
+                |sent, recv| {
+                    assert!(
+                        (sent.local_worker == recv.remote_worker.unwrap())
+                            && (sent.remote_worker.is_none()
+                                || sent.remote_worker.unwrap() == recv.local_worker)
+                    );
+                },
+            );
 
         let partitions = communication_edges.partition(2, |e| match e {
             Timeline::Local(_) => (0, e),
@@ -875,30 +932,28 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
         // partitions[0]: communication edges
         // partitions[1]: records
 
-        let communication_edges =
-            partitions[0].map(|rec| match rec {
-                                  Timeline::Local(edge) => PagOutput::Edge(edge),
-                                  _ => panic!("Incorrect data!"),
-                              });
-        let communication_records =
-            partitions[1].map(|rec| match rec {
-                                  Timeline::Remote(log_record) => log_record,
-                                  _ => panic!("Incorrect data!"),
-                              });
+        let communication_edges = partitions[0].map(|rec| match rec {
+            Timeline::Local(edge) => PagOutput::Edge(edge),
+            _ => panic!("Incorrect data!"),
+        });
+        let communication_records = partitions[1].map(|rec| match rec {
+            Timeline::Remote(log_record) => log_record,
+            _ => panic!("Incorrect data!"),
+        });
 
         let worker_timeline_input = input.concat(&communication_records);
 
         // construct worker time line and filter zero time events
         let worker_timelines = worker_timeline_input
-            .build_worker_timelines(threshold,
-                                    window_size_ns,
-                                    insert_waitig_edges)
-            .filter(|pag| if let PagOutput::Edge(ref e) = *pag {
-                        e.source.worker_id != e.destination.worker_id ||
-                        e.source.timestamp < e.destination.timestamp
-                    } else {
-                        true
-                    });
+            .build_worker_timelines(threshold, window_size_ns, insert_waitig_edges)
+            .filter(|pag| {
+                if let PagOutput::Edge(ref e) = *pag {
+                    e.source.worker_id != e.destination.worker_id
+                        || e.source.timestamp < e.destination.timestamp
+                } else {
+                    true
+                }
+            });
 
         // Step 3: merge the contents of both streams and sort according to event time
         let result = worker_timelines.concat(&communication_edges);

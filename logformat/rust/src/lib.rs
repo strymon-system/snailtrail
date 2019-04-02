@@ -7,18 +7,16 @@
 // except according to those terms.
 
 ///! Data structure and (de)serialization for a `LogRecord`
-
-
 extern crate rmp as msgpack;
 #[macro_use]
 extern crate enum_primitive_derive;
-extern crate num_traits;
 extern crate abomonation;
+extern crate num_traits;
 #[macro_use]
 extern crate abomonation_derive;
 
-use std::io::{Write, Read};
 use num_traits::{FromPrimitive, ToPrimitive};
+use std::io::{Read, Write};
 
 use msgpack::decode::NumValueReadError;
 
@@ -137,46 +135,55 @@ impl LogRecord {
                     return Err(LogReadError::Eof);
                 }
             }
-            result
-                .map_err(|read_err| format!("cannot decode timestamp: {:?}", read_err))?
+            result.map_err(|read_err| format!("cannot decode timestamp: {:?}", read_err))?
         };
-        let local_worker =
-            msgpack::decode::read_int(reader)
-                .map_err(|read_err| format!("cannot decode local_worker: {:?}", read_err))?;
-        let activity_type =
-            ActivityType::from_u32(msgpack::decode::read_int(reader)
-                                       .map_err(|read_err| format!("{:?}", read_err))?)
-                    .ok_or("invalid value for activity_type")?;
-        let event_type =
-            EventType::from_u32(msgpack::decode::read_int(reader)
-                                    .map_err(|read_err| format!("{:?}", read_err))?)
-                    .ok_or("invalid value for activity_type")?;
-        let correlator_id =
-            {
-                let val: i64 = msgpack::decode::read_int(reader).map_err(|read_err| format!("cannot decode correlator_id: {:?}", read_err))?;
-                if val == -1 { None } else { Some(val as u64) }
-            };
-        let remote_worker =
-            {
-                let val: i32 = msgpack::decode::read_int(reader).map_err(|read_err| format!("cannot decode remote_worker: {:?}", read_err))?;
-                if val == -1 { None } else { Some(val as u32) }
-            };
+        let local_worker = msgpack::decode::read_int(reader)
+            .map_err(|read_err| format!("cannot decode local_worker: {:?}", read_err))?;
+        let activity_type = ActivityType::from_u32(
+            msgpack::decode::read_int(reader).map_err(|read_err| format!("{:?}", read_err))?,
+        )
+        .ok_or("invalid value for activity_type")?;
+        let event_type = EventType::from_u32(
+            msgpack::decode::read_int(reader).map_err(|read_err| format!("{:?}", read_err))?,
+        )
+        .ok_or("invalid value for activity_type")?;
+        let correlator_id = {
+            let val: i64 = msgpack::decode::read_int(reader)
+                .map_err(|read_err| format!("cannot decode correlator_id: {:?}", read_err))?;
+            if val == -1 {
+                None
+            } else {
+                Some(val as u64)
+            }
+        };
+        let remote_worker = {
+            let val: i32 = msgpack::decode::read_int(reader)
+                .map_err(|read_err| format!("cannot decode remote_worker: {:?}", read_err))?;
+            if val == -1 {
+                None
+            } else {
+                Some(val as u32)
+            }
+        };
         let operator_id = {
-            let val: i32 =
-                msgpack::decode::read_int(reader)
-                    .map_err(|read_err| format!("cannot decode operator_id: {:?}", read_err))?;
-            if val == -1 { None } else { Some(val as u32) }
+            let val: i32 = msgpack::decode::read_int(reader)
+                .map_err(|read_err| format!("cannot decode operator_id: {:?}", read_err))?;
+            if val == -1 {
+                None
+            } else {
+                Some(val as u32)
+            }
         };
 
         Ok(LogRecord {
-               timestamp: timestamp,
-               local_worker: local_worker,
-               activity_type: activity_type,
-               event_type: event_type,
-               correlator_id: correlator_id,
-               remote_worker: remote_worker,
-               operator_id: operator_id,
-           })
+            timestamp: timestamp,
+            local_worker: local_worker,
+            activity_type: activity_type,
+            event_type: event_type,
+            correlator_id: correlator_id,
+            remote_worker: remote_worker,
+            operator_id: operator_id,
+        })
     }
 }
 

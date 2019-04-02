@@ -10,22 +10,22 @@ extern crate env_logger;
 extern crate json;
 #[macro_use]
 extern crate log;
-extern crate logformat;
 extern crate getopts;
+extern crate logformat;
 extern crate regex;
 
-use std::env;
-use std::process;
-use std::fmt;
 use std::cmp;
+use std::env;
+use std::fmt;
 use std::fs::File;
-use std::io::{self, Read, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
+use std::process;
 
 use std::collections::HashMap;
 
-use json::JsonValue;
-use logformat::{LogRecord, ActivityType, EventType};
 use getopts::Options;
+use json::JsonValue;
+use logformat::{ActivityType, EventType, LogRecord};
 use regex::Regex;
 
 #[derive(Debug)]
@@ -60,7 +60,6 @@ type Tid = u32;
 
 type WorkerId = u32;
 type OperatorId = u32;
-
 
 type Nanoseconds = u64;
 type Timestamp = u64; // Unix time in nanoseconds
@@ -172,9 +171,10 @@ impl StepStats {
         match phase {
             "M" => {
                 // metadata event
-                assert_eq!(event["name"],
-                           "process_name",
-                           "assumed metadata events only to be used for PID names");
+                assert_eq!(
+                    event["name"], "process_name",
+                    "assumed metadata events only to be used for PID names"
+                );
 
                 let mut device_name = event["args"]["name"].as_str().unwrap().to_string();
                 let pid = event["pid"].as_u32().unwrap();
@@ -192,9 +192,10 @@ impl StepStats {
             }
             "X" => {
                 // duration event
-                assert_eq!(event["cat"],
-                           "Op",
-                           "only duration events of operations supported");
+                assert_eq!(
+                    event["cat"], "Op",
+                    "only duration events of operations supported"
+                );
 
                 let pid = event["pid"].as_u32().unwrap();
                 let device = &self.device_names[&pid];
@@ -290,12 +291,10 @@ impl TensorFlow {
         let missing = required - available;
 
         let new_threads: Vec<Thread> = (0..missing)
-            .map(|_| {
-                     Thread {
-                         worker_id: self.generate_worker_id(),
-                         schedule: Vec::new(),
-                     }
-                 })
+            .map(|_| Thread {
+                worker_id: self.generate_worker_id(),
+                schedule: Vec::new(),
+            })
             .collect();
 
         self.device
@@ -305,8 +304,10 @@ impl TensorFlow {
     }
 
     fn schedule_step(&mut self, step: StepStats) {
-        assert!(step.device_stats.len() == 1,
-                "currently only supports single device");
+        assert!(
+            step.device_stats.len() == 1,
+            "currently only supports single device"
+        );
 
         let window_size = step.last_ts - step.first_ts;
         // starting at 0 tends to be buggy, and we add +1 since snailtrail
@@ -331,9 +332,11 @@ impl TensorFlow {
                 let output = activity.output.clone();
 
                 // create operator id if necessary
-                assert!(self.operators.contains_key(&activity.op),
-                        "Unkown operator {:?}, please add to operators.json",
-                        activity.op);
+                assert!(
+                    self.operators.contains_key(&activity.op),
+                    "Unkown operator {:?}, please add to operators.json",
+                    activity.op
+                );
 
                 let thread = if self.preserve_tid {
                     &mut threads[activity.tid as usize]
@@ -353,8 +356,10 @@ impl TensorFlow {
             }
         }
 
-        println!("Step length (in seconds): {:.9}",
-                 (window_size as f64 + 1.0) / 1e9);
+        println!(
+            "Step length (in seconds): {:.9}",
+            (window_size as f64 + 1.0) / 1e9
+        );
     }
 
     fn potential_duplicates(&self, input: &str) -> Vec<String> {
@@ -362,21 +367,22 @@ impl TensorFlow {
         self.duplication_suffix
             .captures_iter(input)
             .map(|cap| {
-                     let m = cap.get(0).unwrap();
-                     let delimn = cap.get(1).unwrap().as_str();
-                     let end = m.end() - delimn.len();
-                     // create a string which does not contain the _1 bit
-                     [&input[..m.start()], &input[end..]].join("")
-                 })
+                let m = cap.get(0).unwrap();
+                let delimn = cap.get(1).unwrap().as_str();
+                let end = m.end() - delimn.len();
+                // create a string which does not contain the _1 bit
+                [&input[..m.start()], &input[end..]].join("")
+            })
             .collect()
     }
 
-    fn emit_dependency<W: Write>(&self,
-                                 input: &str,
-                                 activity: &NodeStats,
-                                 worker: WorkerId,
-                                 writer: &mut LogWriter<W>)
-                                 -> Result<(), Error> {
+    fn emit_dependency<W: Write>(
+        &self,
+        input: &str,
+        activity: &NodeStats,
+        worker: WorkerId,
+        writer: &mut LogWriter<W>,
+    ) -> Result<(), Error> {
         // control dependencies start with a caret, just strip it
         if input.starts_with("^") {
             if let Some((parent, send)) = self.lookup(&input[1..]) {
@@ -387,15 +393,17 @@ impl TensorFlow {
         } else if let Some((parent, send)) = self.lookup(input) {
             writer.data(parent, send, worker, activity.start);
         } else {
-            let potential_outputs: Vec<_> = self.potential_duplicates(input)
+            let potential_outputs: Vec<_> = self
+                .potential_duplicates(input)
                 .iter()
                 .filter_map(|input| self.lookup(input))
                 .collect();
 
             if potential_outputs.len() > 1 {
-                warn!("too many candiates for input {}: {:?}",
-                      input,
-                      potential_outputs);
+                warn!(
+                    "too many candiates for input {}: {:?}",
+                    input, potential_outputs
+                );
             } else if let Some(&(parent, send)) = potential_outputs.first() {
                 writer.data(parent, send, worker, activity.start);
             } else {
@@ -425,11 +433,13 @@ impl TensorFlow {
                     }
                     // TODO(swicki): deal with recv/send nodes
                     let operator_id = self.operators[&activity.op];
-                    writer.activity(worker,
-                                    activity.start,
-                                    activity.duration,
-                                    ActivityType::Processing,
-                                    operator_id);
+                    writer.activity(
+                        worker,
+                        activity.start,
+                        activity.duration,
+                        ActivityType::Processing,
+                        operator_id,
+                    );
                 }
             }
         }
@@ -458,12 +468,14 @@ impl<W: Write> LogWriter<W> {
         }
     }
 
-    fn communication(&mut self,
-                     sender: u32,
-                     send_ts: Timestamp,
-                     receiver: u32,
-                     recv_ts: Timestamp,
-                     activity: ActivityType) {
+    fn communication(
+        &mut self,
+        sender: u32,
+        send_ts: Timestamp,
+        receiver: u32,
+        recv_ts: Timestamp,
+        activity: ActivityType,
+    ) {
         if sender == receiver {
             info!("omitting self message of type {:?}", activity);
             return;
@@ -495,27 +507,33 @@ impl<W: Write> LogWriter<W> {
     }
 
     pub fn data(&mut self, sender: u32, send_ts: Timestamp, receiver: u32, recv_ts: Timestamp) {
-        self.communication(sender,
-                           send_ts,
-                           receiver,
-                           recv_ts,
-                           ActivityType::DataMessage)
+        self.communication(
+            sender,
+            send_ts,
+            receiver,
+            recv_ts,
+            ActivityType::DataMessage,
+        )
     }
 
     pub fn control(&mut self, sender: u32, send_ts: Timestamp, receiver: u32, recv_ts: Timestamp) {
-        self.communication(sender,
-                           send_ts,
-                           receiver,
-                           recv_ts,
-                           ActivityType::ControlMessage)
+        self.communication(
+            sender,
+            send_ts,
+            receiver,
+            recv_ts,
+            ActivityType::ControlMessage,
+        )
     }
 
-    pub fn activity(&mut self,
-                    worker: u32,
-                    start: Timestamp,
-                    duration: Nanoseconds,
-                    activity: ActivityType,
-                    operator: u32) {
+    pub fn activity(
+        &mut self,
+        worker: u32,
+        start: Timestamp,
+        duration: Nanoseconds,
+        activity: ActivityType,
+        operator: u32,
+    ) {
         let start_event = LogRecord {
             timestamp: start,
             local_worker: worker,
@@ -550,9 +568,10 @@ impl<W: Write> LogWriter<W> {
     }
 
     fn print_stats(&self) {
-        println!("emitted {} activities and {} flow events",
-                 self.activity_cnt,
-                 self.sequence_no);
+        println!(
+            "emitted {} activities and {} flow events",
+            self.activity_cnt, self.sequence_no
+        );
     }
 }
 

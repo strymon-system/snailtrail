@@ -10,20 +10,20 @@ extern crate env_logger;
 extern crate json;
 #[macro_use]
 extern crate log;
-extern crate logformat;
 extern crate getopts;
+extern crate logformat;
 
 use std::env;
-use std::process;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, BufReader, BufRead, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::process;
 
 use std::collections::{HashMap, HashSet};
 
+use getopts::{Matches, Options};
 use json::JsonValue;
-use logformat::{LogRecord, ActivityType, EventType};
-use getopts::{Options, Matches};
+use logformat::{ActivityType, EventType, LogRecord};
 
 /// SnailTrail worker id of the Spark driver.
 const DRIVER: u32 = 0;
@@ -82,9 +82,8 @@ impl JsonParse for JsonValue {
         if let Some(val) = self.as_u64() {
             Ok(val)
         } else if let Some(s) = self.as_str() {
-            s.parse::<u64>().map_err(|err| {
-                Error::other(err.to_string())
-            })
+            s.parse::<u64>()
+                .map_err(|err| Error::other(err.to_string()))
         } else {
             Err(Error::other(format!("failed to parse number: {:?}", self)))
         }
@@ -116,14 +115,12 @@ enum DriverState {
 pub struct Driver {
     /// The timestamp of marks *beginning* of a driver activity. It is
     /// implicitly finished when the next state begins.
-    state: Vec<(Timestamp, DriverState, StageId)>
+    state: Vec<(Timestamp, DriverState, StageId)>,
 }
 
 impl Driver {
     fn new() -> Self {
-        Driver {
-            state: Vec::new(),
-        }
+        Driver { state: Vec::new() }
     }
 }
 
@@ -217,7 +214,7 @@ struct Task {
     getting_result_ts: Option<Timestamp>,
     shuffle_read: Nanoseconds, // duration, overlaps with `executor_run_time`
     shuffle_write: Nanoseconds, // duration, overlaps with `executor_run_time`
-    jvm_gc_time: Nanoseconds, // duration, overlaps with `executor_run_time`
+    jvm_gc_time: Nanoseconds,  // duration, overlaps with `executor_run_time`
     result_serialize: Nanoseconds, // duration
     task_deserialize: Nanoseconds, // duration
     executor_run_time: Nanoseconds, // duration
@@ -231,7 +228,9 @@ impl Task {
 
     /// time it took the driver to fetch the results
     fn getting_result_duration(&self) -> Nanoseconds {
-        self.getting_result_ts.map(|x| self.finish_ts - x).unwrap_or(0)
+        self.getting_result_ts
+            .map(|x| self.finish_ts - x)
+            .unwrap_or(0)
     }
 
     /// time it took a executor thread to execute this task
@@ -257,21 +256,50 @@ impl fmt::Debug for Task {
             .field("Executor", &self.executor)
             .field("Driver Lauch Time (ms)", &(self.launch_ts / 1_000_000))
             .field("Driver Finish Time (ms)", &(self.finish_ts / 1_000_000))
-            .field("Driver Getting Result Time (ms)", &(self.getting_result_ts.map(|ts| ts / 1_000_000)))
-            .field("Shuffle Read (ms)", &(self.shuffle_read as f64 / 1_000_000.0))
-            .field("Shuffle Write (ms)", &(self.shuffle_write as f64 / 1_000_000.0))
+            .field(
+                "Driver Getting Result Time (ms)",
+                &(self.getting_result_ts.map(|ts| ts / 1_000_000)),
+            )
+            .field(
+                "Shuffle Read (ms)",
+                &(self.shuffle_read as f64 / 1_000_000.0),
+            )
+            .field(
+                "Shuffle Write (ms)",
+                &(self.shuffle_write as f64 / 1_000_000.0),
+            )
             .field("JVM GC Time (ms)", &(self.jvm_gc_time as f64 / 1_000_000.0))
-            .field("Result Serialize (ms)", &(self.result_serialize as f64 / 1_000_000.0))
-            .field("Task Deserialize (ms)", &(self.task_deserialize as f64 / 1_000_000.0))
-            .field("Executor Run Time (ms)", &(self.executor_run_time as f64 / 1_000_000.0))
-            .field("Getting Result Duration (ms)", &(self.getting_result_duration() as f64 / 1_000_000.0))
-            .field("Scheduler Delay (ms)", &(self.scheduler_delay() as f64 / 1_000_000.0))
-            .field("Executor Duration (ms)", &(self.executor_duration() as f64 / 1_000_000.0))
-            .field("Total Duration (ms)", &(self.total_duration() as f64 / 1_000_000.0))
+            .field(
+                "Result Serialize (ms)",
+                &(self.result_serialize as f64 / 1_000_000.0),
+            )
+            .field(
+                "Task Deserialize (ms)",
+                &(self.task_deserialize as f64 / 1_000_000.0),
+            )
+            .field(
+                "Executor Run Time (ms)",
+                &(self.executor_run_time as f64 / 1_000_000.0),
+            )
+            .field(
+                "Getting Result Duration (ms)",
+                &(self.getting_result_duration() as f64 / 1_000_000.0),
+            )
+            .field(
+                "Scheduler Delay (ms)",
+                &(self.scheduler_delay() as f64 / 1_000_000.0),
+            )
+            .field(
+                "Executor Duration (ms)",
+                &(self.executor_duration() as f64 / 1_000_000.0),
+            )
+            .field(
+                "Total Duration (ms)",
+                &(self.total_duration() as f64 / 1_000_000.0),
+            )
             .finish()
     }
 }
-
 
 /// A wrapper around the `Task` struct which contains it's start and end time,
 /// as well as the SnailTrail worker id it was executed on.
@@ -396,9 +424,9 @@ impl SparkState {
 
         // create a thread object for each core (and assign a worker id for the
         // log format to each thread), each of which is idle (busy_until = 0)
-        let threads: Vec<Thread> = (0..executor.cores).map(|index| {
-            Thread::new(self.generate_worker_id(), index)
-        }).collect();
+        let threads: Vec<Thread> = (0..executor.cores)
+            .map(|index| Thread::new(self.generate_worker_id(), index))
+            .collect();
 
         self.threads.insert(id.clone(), threads);
         self.executors.insert(id, executor);
@@ -431,7 +459,10 @@ impl SparkState {
         assert!(self.submitted.contains_key(&id));
         assert!(!self.completed.contains_key(&id));
         assert!(!self.skipped.contains(&id));
-        assert!(submission_ts < completion_ts, "invalid stage completion time");
+        assert!(
+            submission_ts < completion_ts,
+            "invalid stage completion time"
+        );
 
         let stage = self.submitted.remove(&id).unwrap();
         let completed = CompletedStage {
@@ -456,13 +487,16 @@ impl SparkState {
         // make sure the number of tasks matches
         assert_eq!(
             // count the number of tasks for each stage
-            self.task_queue.iter().fold(HashMap::new(), |mut counts, task| {
-                *counts.entry(task.stage).or_insert(0) += 1;
-                counts
-            }),
-            self.completed.iter().map(|(&id, stage)| {
-                (id, stage.num_tasks)
-            }).collect(),
+            self.task_queue
+                .iter()
+                .fold(HashMap::new(), |mut counts, task| {
+                    *counts.entry(task.stage).or_insert(0) += 1;
+                    counts
+                }),
+            self.completed
+                .iter()
+                .map(|(&id, stage)| { (id, stage.num_tasks) })
+                .collect(),
             "invalid number of tasks"
         );
 
@@ -475,26 +509,28 @@ impl SparkState {
 
         // assert that we do not break the already inferred driver state
         assert!(
-            self.task_queue.first().map(|task| task.launch_ts) >
-            self.driver.state.last().map(|&(ts, _, _)| ts)
+            self.task_queue.first().map(|task| task.launch_ts)
+                > self.driver.state.last().map(|&(ts, _, _)| ts)
         );
 
         // for each completed stage, we want to keep track of which workers
         // were involved for the computation
-        let mut stages: HashMap<StageId, ProcessedStage> =
-            self.completed.drain().map(|(id, stage)| {
+        let mut stages: HashMap<StageId, ProcessedStage> = self
+            .completed
+            .drain()
+            .map(|(id, stage)| {
+                let processed = ProcessedStage {
+                    id: stage.id,
+                    parents: stage.parents,
+                    submission_ts: stage.submission_ts,
+                    completion_ts: stage.completion_ts,
+                    workers: HashSet::new(),
+                    schedule: Vec::new(),
+                };
 
-            let processed = ProcessedStage {
-                id: stage.id,
-                parents: stage.parents,
-                submission_ts: stage.submission_ts,
-                completion_ts: stage.completion_ts,
-                workers: HashSet::new(),
-                schedule: Vec::new(),
-            };
-
-            (id, processed)
-        }).collect();
+                (id, processed)
+            })
+            .collect();
 
         // indicates the *end* of certain driver states
         let mut driver_ending_state: Vec<(Timestamp, DriverState, StageId)> = Vec::new();
@@ -531,9 +567,13 @@ impl SparkState {
             info!("scheduling {:#?}", task);
 
             // get the threads for the executor the task was scheduled on
-            let available = self.threads.get_mut(&task.executor).expect("unknown executor");
+            let available = self
+                .threads
+                .get_mut(&task.executor)
+                .expect("unknown executor");
             // find the most recently used thread
-            let thread = available.iter_mut()
+            let thread = available
+                .iter_mut()
                 // ignore threads which are still busy
                 .filter(|t| t.busy_until < start_time)
                 // find the most recently used thread
@@ -575,7 +615,9 @@ impl SparkState {
         // there are no pending tasks running, so we need to open a scheduling
         // state
         if let Some(&(last_ts, _, _)) = driver_ending_state.last() {
-            self.driver.state.push((last_ts, DriverState::Scheduling, 0));
+            self.driver
+                .state
+                .push((last_ts, DriverState::Scheduling, 0));
         }
 
         assert!(self.task_queue.is_empty());
@@ -584,7 +626,7 @@ impl SparkState {
 
     fn add_task(&mut self, task: Task) {
         // check if we have to create a new executor for this task
-        if !self.executors.contains_key(&task.executor){
+        if !self.executors.contains_key(&task.executor) {
             if let Some(cores) = self.default_executor_cores {
                 let executor = Executor {
                     id: task.executor.clone(),
@@ -675,11 +717,14 @@ impl<W: Write> LogWriter<W> {
         }
     }
 
-    fn communication(&mut self,
-        sender: u32, send_ts: Timestamp,
-        receiver: u32, recv_ts: Timestamp,
-        activity: ActivityType) -> io::Result<()>
-    {
+    fn communication(
+        &mut self,
+        sender: u32,
+        send_ts: Timestamp,
+        receiver: u32,
+        recv_ts: Timestamp,
+        activity: ActivityType,
+    ) -> io::Result<()> {
         let tx = LogRecord {
             timestamp: send_ts,
             local_worker: sender,
@@ -706,23 +751,46 @@ impl<W: Write> LogWriter<W> {
         rx.write(&mut self.writer)
     }
 
-    pub fn data(&mut self,
-        sender: u32, send_ts: Timestamp,
-        receiver: u32, recv_ts: Timestamp) -> io::Result<()>
-    {
-        self.communication(sender, send_ts, receiver, recv_ts, ActivityType::DataMessage)
+    pub fn data(
+        &mut self,
+        sender: u32,
+        send_ts: Timestamp,
+        receiver: u32,
+        recv_ts: Timestamp,
+    ) -> io::Result<()> {
+        self.communication(
+            sender,
+            send_ts,
+            receiver,
+            recv_ts,
+            ActivityType::DataMessage,
+        )
     }
 
-    pub fn control(&mut self,
-        sender: u32, send_ts: Timestamp,
-        receiver: u32, recv_ts: Timestamp) -> io::Result<()>
-    {
-        self.communication(sender, send_ts, receiver, recv_ts, ActivityType::ControlMessage)
+    pub fn control(
+        &mut self,
+        sender: u32,
+        send_ts: Timestamp,
+        receiver: u32,
+        recv_ts: Timestamp,
+    ) -> io::Result<()> {
+        self.communication(
+            sender,
+            send_ts,
+            receiver,
+            recv_ts,
+            ActivityType::ControlMessage,
+        )
     }
 
-    pub fn activity(&mut self, worker: u32, start: Timestamp, duration: Nanoseconds,
-        activity: ActivityType, operator: u32) -> io::Result<()>
-    {
+    pub fn activity(
+        &mut self,
+        worker: u32,
+        start: Timestamp,
+        duration: Nanoseconds,
+        activity: ActivityType,
+        operator: u32,
+    ) -> io::Result<()> {
         let start_event = LogRecord {
             timestamp: start,
             local_worker: worker,
@@ -758,30 +826,31 @@ impl SparkState {
             trace!("processing {}", data);
 
             // each entry has an Event key
-            let ref event = data["Event"].as_str()
+            let ref event = data["Event"]
+                .as_str()
                 .ok_or_else(|| Error::other("\"Event\" has invalid value"))?;
 
             match *event {
                 "SparkListenerExecutorAdded" => {
                     let executor = Executor::parse(&data)?;
                     self.add_executor(executor);
-                },
+                }
                 "SparkListenerExecutorRemoved" => {
                     error!("currently cannot remove executors");
-                },
+                }
                 "SparkListenerTaskStart" => {
                     /* silently ignored, we have the launch time in end */
-                },
+                }
                 "SparkListenerTaskEnd" => {
                     let task = Task::parse(&data)?;
                     self.add_task(task);
-                },
+                }
                 "SparkListenerStageSubmitted" => {
                     // note: for some reason, not all stage submission events
                     // actually contain the submission time!?
                     let stage = SubmittedStage::parse(&data)?;
                     self.submit_stage(stage);
-                },
+                }
                 "SparkListenerStageCompleted" => {
                     let ref info = data["Stage Info"];
                     let id = info["Stage ID"].parse_u32()?;
@@ -789,7 +858,7 @@ impl SparkState {
                     let completion_ts = info["Completion Time"].parse_u64()? * 1_000_000; // ms -> ns
 
                     self.complete_stage(id, submission_ts, completion_ts);
-                },
+                }
                 ev => warn!("unknown event {:?}", ev),
             }
         }
@@ -831,26 +900,56 @@ impl SparkState {
 
                 // create executor activities
                 let start_deserialize = scheduled.start_time;
-                logwriter.activity(worker, start_deserialize, task.task_deserialize, ActivityType::Deserialization, op)?;
+                logwriter.activity(
+                    worker,
+                    start_deserialize,
+                    task.task_deserialize,
+                    ActivityType::Deserialization,
+                    op,
+                )?;
 
                 // shuffle read before the computation
                 let start_read = start_deserialize + task.task_deserialize;
                 if task.shuffle_read > 0 {
-                    logwriter.activity(worker, start_read, task.shuffle_read, ActivityType::Buffer, op)?;
+                    logwriter.activity(
+                        worker,
+                        start_read,
+                        task.shuffle_read,
+                        ActivityType::Buffer,
+                        op,
+                    )?;
                 }
 
                 // we use the task.executor_computing_time() calculation here to execlude shuffling
                 let start_computing = start_read + task.shuffle_read;
-                logwriter.activity(worker, start_computing, task.executor_computing_time(), ActivityType::Processing, op)?;
+                logwriter.activity(
+                    worker,
+                    start_computing,
+                    task.executor_computing_time(),
+                    ActivityType::Processing,
+                    op,
+                )?;
 
                 // shuffle write at the end of a task
                 let start_write = start_computing + task.executor_computing_time();
                 if task.shuffle_write > 0 {
-                    logwriter.activity(worker, start_write, task.shuffle_write, ActivityType::Buffer, op)?;
+                    logwriter.activity(
+                        worker,
+                        start_write,
+                        task.shuffle_write,
+                        ActivityType::Buffer,
+                        op,
+                    )?;
                 }
 
                 let start_serialize = start_write + task.shuffle_write;
-                logwriter.activity(worker, start_serialize, task.result_serialize, ActivityType::Serialization, op)?;
+                logwriter.activity(
+                    worker,
+                    start_serialize,
+                    task.result_serialize,
+                    ActivityType::Serialization,
+                    op,
+                )?;
 
                 // communication edge for sending back the result
                 let send_ts = scheduled.end_time;
@@ -865,10 +964,12 @@ impl SparkState {
                     // check if the parent stage exists
                     let parent = match self.processed.get(parent_id) {
                         Some(parent) => parent,
-                        None => if self.skipped.contains(&parent_id) {
-                            continue;
-                        } else {
-                            panic!("no parent stage {} found!", parent_id);
+                        None => {
+                            if self.skipped.contains(&parent_id) {
+                                continue;
+                            } else {
+                                panic!("no parent stage {} found!", parent_id);
+                            }
                         }
                     };
 
@@ -883,16 +984,22 @@ impl SparkState {
             }
         }
 
-        info!("wrote {} activities and {} messages",
-                logwriter.activity_cnt, logwriter.sequence_no);
+        info!(
+            "wrote {} activities and {} messages",
+            logwriter.activity_cnt, logwriter.sequence_no
+        );
 
         Ok(())
     }
 }
 
-fn convert(reader: &str, writer: &str, draw_shuffle_edges: bool,
-    executor_cores: Option<usize>, delay_split: f64) -> Result<(), Error>
-{
+fn convert(
+    reader: &str,
+    writer: &str,
+    draw_shuffle_edges: bool,
+    executor_cores: Option<usize>,
+    delay_split: f64,
+) -> Result<(), Error> {
     // reader of the Spark logs
     let reader = File::open(reader)?;
     let reader = BufReader::new(reader);
@@ -902,8 +1009,14 @@ fn convert(reader: &str, writer: &str, draw_shuffle_edges: bool,
     // just keep the parent information around, but for now this seems easier.
     let mut spark = SparkState::new(delay_split, executor_cores);
     spark.read_json(reader)?;
-    assert!(spark.submitted.is_empty(), "log contained unprocessed stages");
-    assert!(spark.completed.is_empty(), "log contained unprocessed stages");
+    assert!(
+        spark.submitted.is_empty(),
+        "log contained unprocessed stages"
+    );
+    assert!(
+        spark.completed.is_empty(),
+        "log contained unprocessed stages"
+    );
 
     info!("{:#?}", spark);
 
@@ -938,12 +1051,22 @@ fn main() {
 
     let mut opts = Options::new();
     opts.optflag("s", "shuffle", "emit edges for shuffle phases");
-    opts.optopt("e", "executor-cores", "assume number of cores for missing executors", "NUM");
-    opts.optopt("d", "delay-split", "percentage of the scheduler delay assigned to task shipping (default: 0.33)", "PERCENTAGE");
+    opts.optopt(
+        "e",
+        "executor-cores",
+        "assume number of cores for missing executors",
+        "NUM",
+    );
+    opts.optopt(
+        "d",
+        "delay-split",
+        "percentage of the scheduler delay assigned to task shipping (default: 0.33)",
+        "PERCENTAGE",
+    );
     opts.optflag("h", "help", "print this help menu");
     let mut matches = match opts.parse(&args[1..]) {
-        Ok(m) => { m }
-        Err(f) => { panic!(f.to_string()) }
+        Ok(m) => m,
+        Err(f) => panic!(f.to_string()),
     };
 
     if matches.opt_present("h") {
@@ -951,17 +1074,23 @@ fn main() {
     }
 
     let shuffle = matches.opt_present("shuffle");
-    let executor_cores = matches.opt_str("executor-cores")
-        .map(|s| s.parse::<usize>().expect("failed to parse number of executor cores"));
+    let executor_cores = matches.opt_str("executor-cores").map(|s| {
+        s.parse::<usize>()
+            .expect("failed to parse number of executor cores")
+    });
 
     let delay_split = if let Some(split) = matches.opt_str("delay-split") {
-        split.parse::<f64>().map_err(|e| e.to_string()).and_then(|p| {
-            if p >= 0.0 && p <= 1.0 {
-                Ok(p)
-            } else {
-                Err(format!("value must be between 0.0 and 1.0: {}", p))
-            }
-        }).expect("invalid percentage provided for --delay-split")
+        split
+            .parse::<f64>()
+            .map_err(|e| e.to_string())
+            .and_then(|p| {
+                if p >= 0.0 && p <= 1.0 {
+                    Ok(p)
+                } else {
+                    Err(format!("value must be between 0.0 and 1.0: {}", p))
+                }
+            })
+            .expect("invalid percentage provided for --delay-split")
     } else {
         0.33f64
     };
@@ -969,5 +1098,6 @@ fn main() {
     let reader = pop_arg(&mut matches).unwrap_or_else(|| print_usage(&program, opts));
     let writer = pop_arg(&mut matches).unwrap_or_else(|| format!("{}.msgpack", reader));
 
-    convert(&reader, &writer, shuffle, executor_cores, delay_split).expect("failed to convert Spark logs");
+    convert(&reader, &writer, shuffle, executor_cores, delay_split)
+        .expect("failed to convert Spark logs");
 }

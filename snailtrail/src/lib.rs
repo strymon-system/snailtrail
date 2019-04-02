@@ -36,13 +36,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use time;
 
-    use graph::{SrcDst, Partitioning};
-    use exploration::{UnboundCapacity, BetweennessCentrality};
+    use exploration::{BetweennessCentrality, UnboundCapacity};
+    use graph::{Partitioning, SrcDst};
 
     use timely;
-    use timely::dataflow::operators::*;
     use timely::dataflow::operators::aggregation::Aggregate;
     use timely::dataflow::operators::capture::Extract;
+    use timely::dataflow::operators::*;
 
     use abomonation::Abomonation;
 
@@ -85,39 +85,40 @@ mod tests {
 
     #[test]
     fn it_works() {
-
-        let mut edges_result = vec![Edge {
-                                        src: Some(Node { id: 1, worker: 0 }),
-                                        dst: Some(Node { id: 2, worker: 0 }),
-                                    },
-                                    Edge {
-                                        src: Some(Node { id: 2, worker: 0 }),
-                                        dst: Some(Node { id: 3, worker: 1 }),
-                                    },
-                                    Edge {
-                                        src: Some(Node { id: 2, worker: 0 }),
-                                        dst: Some(Node { id: 4, worker: 0 }),
-                                    },
-                                    Edge {
-                                        src: Some(Node { id: 3, worker: 1 }),
-                                        dst: Some(Node { id: 4, worker: 0 }),
-                                    },
-                                    Edge {
-                                        src: Some(Node { id: 4, worker: 0 }),
-                                        dst: Some(Node { id: 5, worker: 0 }),
-                                    }];
+        let mut edges_result = vec![
+            Edge {
+                src: Some(Node { id: 1, worker: 0 }),
+                dst: Some(Node { id: 2, worker: 0 }),
+            },
+            Edge {
+                src: Some(Node { id: 2, worker: 0 }),
+                dst: Some(Node { id: 3, worker: 1 }),
+            },
+            Edge {
+                src: Some(Node { id: 2, worker: 0 }),
+                dst: Some(Node { id: 4, worker: 0 }),
+            },
+            Edge {
+                src: Some(Node { id: 3, worker: 1 }),
+                dst: Some(Node { id: 4, worker: 0 }),
+            },
+            Edge {
+                src: Some(Node { id: 4, worker: 0 }),
+                dst: Some(Node { id: 5, worker: 0 }),
+            },
+        ];
 
         let edges = edges_result.clone();
 
         let s = vec![Edge {
-                         src: None,
-                         dst: Some(Node { id: 1, worker: 0 }),
-                     }];
+            src: None,
+            dst: Some(Node { id: 1, worker: 0 }),
+        }];
 
         let t = vec![Edge {
-                         src: Some(Node { id: 5, worker: 0 }),
-                         dst: None,
-                     }];
+            src: Some(Node { id: 5, worker: 0 }),
+            dst: None,
+        }];
 
         let correct = vec![2, 1, 1, 1, 2];
 
@@ -128,24 +129,29 @@ mod tests {
             let index = root.index();
             let send = send.lock().unwrap().clone();
 
-            let (mut graph_input, mut edge_input, mut edge_input2) =
-                root.dataflow::<Timestamp, _, _>(move |scope| {
+            let (mut graph_input, mut edge_input, mut edge_input2) = root
+                .dataflow::<Timestamp, _, _>(move |scope| {
+                    let (graph_input, graph_stream) = scope.new_input();
+                    let (edge_input, forward_stream) = scope.new_input();
+                    let (edge_input2, backward_stream) = scope.new_input();
 
-                let (graph_input, graph_stream) = scope.new_input();
-                let (edge_input, forward_stream) = scope.new_input();
-                let (edge_input2, backward_stream) = scope.new_input();
-
-                let result = graph_stream.betweenness_centrality::<UnboundCapacity, u64>(&forward_stream, &backward_stream, "comp");
-                // let result = result.inspect_batch(move |t, x| println!("[{:?}] {:?} -> {:?}", index, t, x));
-                result.capture_into(send);
-                let weight = result.map(|(edge, bc)| (edge, bc));
-                weight.inspect(|x| println!("weight: {:?}", x));
-                let summary = weight.map(|(_, bc)| ((), bc)).aggregate::<u64,_, _, _, _>(|_key, val, agg| *agg += val,
-                       |_key, agg| agg,
-                       |_key| 0 /* activity type */);
-                summary.inspect(|x| println!("summary: {:?}", x));
-                (graph_input, edge_input, edge_input2)
-            });
+                    let result = graph_stream.betweenness_centrality::<UnboundCapacity, u64>(
+                        &forward_stream,
+                        &backward_stream,
+                        "comp",
+                    );
+                    // let result = result.inspect_batch(move |t, x| println!("[{:?}] {:?} -> {:?}", index, t, x));
+                    result.capture_into(send);
+                    let weight = result.map(|(edge, bc)| (edge, bc));
+                    weight.inspect(|x| println!("weight: {:?}", x));
+                    let summary = weight.map(|(_, bc)| ((), bc)).aggregate::<u64, _, _, _, _>(
+                        |_key, val, agg| *agg += val,
+                        |_key, agg| agg,
+                        |_key| 0, /* activity type */
+                    );
+                    summary.inspect(|x| println!("summary: {:?}", x));
+                    (graph_input, edge_input, edge_input2)
+                });
             if index == 0 {
                 for edge in edges.iter() {
                     graph_input.send(edge.clone());
@@ -164,7 +170,8 @@ mod tests {
             while root.step() {}
             let end = time::precise_time_s();
             println!("Duration: {:?}", end - start);
-        }).unwrap(); // asserts error-free execution;
+        })
+        .unwrap(); // asserts error-free execution;
         let result = recv.extract();
         println!("Output: {:?}", result);
         let result: Vec<(_, _)> = result[0]

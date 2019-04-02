@@ -6,17 +6,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use logformat::{CorrelatorId, EventType, LogReadError, LogRecord, Timestamp, Worker};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
-use std::collections::{HashSet, HashMap};
-use logformat::{CorrelatorId, EventType, LogRecord, LogReadError, Timestamp, Worker};
 
 /// Read and decode all log records from a log file and give them as input in a single epoch.  In a
 /// real computation we'd read input in the background and allow the computation to progress by
 /// continually making steps.
-pub fn read_sorted_trace_from_file_and_cut_messages(log_path: &str,
-                                                    message_delay: Option<u64>)
-                                                    -> Vec<LogRecord> {
+pub fn read_sorted_trace_from_file_and_cut_messages(
+    log_path: &str,
+    message_delay: Option<u64>,
+) -> Vec<LogRecord> {
     let file = File::open(log_path).expect("Unable to open input file");
     let mut reader = BufReader::with_capacity(1 << 22, file);
     let mut input_records = Vec::new();
@@ -42,16 +43,25 @@ pub fn read_sorted_trace_from_file_and_cut_messages(log_path: &str,
         // Find all sends
         for rec in &input_records {
             if rec.event_type == EventType::Sent {
-                send_stash
-                    .insert((rec.local_worker, rec.remote_worker.unwrap(), rec.correlator_id),
-                            rec.timestamp);
+                send_stash.insert(
+                    (
+                        rec.local_worker,
+                        rec.remote_worker.unwrap(),
+                        rec.correlator_id,
+                    ),
+                    rec.timestamp,
+                );
             }
         }
 
         // Match with receives
         for rec in &mut input_records {
             if rec.event_type == EventType::Received {
-                let key = (rec.remote_worker.unwrap(), rec.local_worker, rec.correlator_id);
+                let key = (
+                    rec.remote_worker.unwrap(),
+                    rec.local_worker,
+                    rec.correlator_id,
+                );
                 if let Some(timestamp) = send_stash.remove(&key) {
                     if (rec.timestamp as i64 - timestamp as i64).abs() as u64 > message_delay {
                         let new_timestamp = timestamp + message_delay;
@@ -74,10 +84,10 @@ pub fn workers_in_trace(records: &[LogRecord]) -> Vec<Worker> {
     let mut workers: Vec<_> = records
         .par_iter()
         .map(|x| {
-                 let mut hs = HashSet::new();
-                 hs.insert(x.local_worker);
-                 hs
-             })
+            let mut hs = HashSet::new();
+            hs.insert(x.local_worker);
+            hs
+        })
         .reduce_with(|a, b| a.union(&b).cloned().collect())
         .unwrap_or_default()
         .into_iter()
@@ -87,10 +97,11 @@ pub fn workers_in_trace(records: &[LogRecord]) -> Vec<Worker> {
 }
 
 fn default_hash<T>(obj: &T) -> u64
-    where T: ::std::hash::Hash
+where
+    T: ::std::hash::Hash,
 {
-    use std::hash::Hasher;
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
 
     let mut hasher = DefaultHasher::new();
     obj.hash(&mut hasher);
@@ -102,8 +113,9 @@ pub fn infer_correlator_ids(_workers: &[u32], records: &mut [LogRecord]) {
 
     let mut worker_in_progress = HashMap::new();
     for record in records
-            .iter_mut()
-            .filter(|r| r.activity_type.is_worker_local()) {
+        .iter_mut()
+        .filter(|r| r.activity_type.is_worker_local())
+    {
         let activity_in_progress = worker_in_progress
             .entry(record.local_worker)
             .or_insert_with(HashMap::new);

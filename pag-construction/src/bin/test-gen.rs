@@ -9,12 +9,12 @@
 extern crate clap;
 extern crate logformat;
 
-use clap::{Arg, App};
+use clap::{App, Arg};
 
-use std::path::Path;
+use logformat::{ActivityType, EventType, LogRecord};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use logformat::{LogRecord, ActivityType, EventType};
+use std::path::Path;
 
 type Timestamp = u64; // Unix time in nanoseconds
 type Nanoseconds = u64;
@@ -43,12 +43,14 @@ impl<W: Write> LogWriter<W> {
         }
     }
 
-    fn communication(&mut self,
-                     sender: u32,
-                     send_ts: Timestamp,
-                     receiver: u32,
-                     recv_ts: Timestamp,
-                     activity: ActivityType) {
+    fn communication(
+        &mut self,
+        sender: u32,
+        send_ts: Timestamp,
+        receiver: u32,
+        recv_ts: Timestamp,
+        activity: ActivityType,
+    ) {
         if sender == receiver {
             println!("omitting self message of type {:?}", activity);
             return;
@@ -79,13 +81,14 @@ impl<W: Write> LogWriter<W> {
         self.buffer.push(rx);
     }
 
-    pub fn activity(&mut self,
-                    worker: u32,
-                    start: Timestamp,
-                    stop: Timestamp,
-                    activity: ActivityType,
-                    operator: u32) {
-
+    pub fn activity(
+        &mut self,
+        worker: u32,
+        start: Timestamp,
+        stop: Timestamp,
+        activity: ActivityType,
+        operator: u32,
+    ) {
         let start_event = LogRecord {
             timestamp: start,
             local_worker: worker,
@@ -120,9 +123,10 @@ impl<W: Write> LogWriter<W> {
     }
 
     fn print_stats(&self) {
-        println!("emitted {} activities and {} flow events",
-                 self.activity_cnt,
-                 self.sequence_no);
+        println!(
+            "emitted {} activities and {} flow events",
+            self.activity_cnt, self.sequence_no
+        );
     }
 }
 
@@ -145,11 +149,11 @@ impl PagState {
         assert!(config.num_workers >= 1, "must have at least one worker");
 
         Ok(PagState {
-               phase: 0,
-               clock: offset + 1_000_000_000_000_000,
-               conf: config,
-               writer: LogFileWriter::create(output)?,
-           })
+            phase: 0,
+            clock: offset + 1_000_000_000_000_000,
+            conf: config,
+            writer: LogFileWriter::create(output)?,
+        })
     }
 
     fn generate_pyramid_phase(&mut self) -> io::Result<()> {
@@ -203,12 +207,13 @@ impl PagState {
 
         // worker 0 is a special case
         if self.conf.num_workers > 1 {
-            self.writer
-                .activity(0,
-                          phase_start,
-                          phase_start + slot_len,
-                          self.conf.activity,
-                          0);
+            self.writer.activity(
+                0,
+                phase_start,
+                phase_start + slot_len,
+                self.conf.activity,
+                0,
+            );
             if let Some(infix) = self.conf.activity_infix {
                 self.writer
                     .activity(0, phase_start + slot_len, phase_end - slot_len, infix, 0);
@@ -269,59 +274,81 @@ fn parse_edge(edge: Option<&str>) -> Option<ActivityType> {
 fn main() {
     let matches = App::new("test-gen")
         .about("Generate msgpack traces for testing")
-        .arg(Arg::with_name("OUTPUT")
-                 .help("Log file to write")
-                 .index(1)
-                 .required(true))
-        .arg(Arg::with_name("num-workers")
-                 .help("Number of workers in the pag")
-                 .short("k")
-                 .long("num-workers")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("num-phases")
-                 .help("Number of repetations of the pattern")
-                 .short("r")
-                 .long("num-phases")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("phase-duration")
-                 .help("Duration in milliseconds of each phase")
-                 .short("d")
-                 .long("phase-duration")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("activity")
-                 .long("activity")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("activity-prefix")
-                 .long("activity-prefix")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("activity-infix")
-                 .long("activity-infix")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("activity-suffix")
-                 .long("activity-suffix")
-                 .takes_value(true)
-                 .required(false))
-        .arg(Arg::with_name("offset")
-                 .long("offset")
-                 .takes_value(true)
-                 .help("Initial clock offset in milliseconds")
-                 .required(false))
-        .arg(Arg::with_name("send-edge")
-                 .long("send-edge")
-                 .takes_value(true)
-                 .possible_values(&["data", "control", "none"])
-                 .required(false))
-        .arg(Arg::with_name("recv-edge")
-                 .long("recv-edge")
-                 .takes_value(true)
-                 .possible_values(&["data", "control", "none"])
-                 .required(false))
+        .arg(
+            Arg::with_name("OUTPUT")
+                .help("Log file to write")
+                .index(1)
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("num-workers")
+                .help("Number of workers in the pag")
+                .short("k")
+                .long("num-workers")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("num-phases")
+                .help("Number of repetations of the pattern")
+                .short("r")
+                .long("num-phases")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("phase-duration")
+                .help("Duration in milliseconds of each phase")
+                .short("d")
+                .long("phase-duration")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("activity")
+                .long("activity")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("activity-prefix")
+                .long("activity-prefix")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("activity-infix")
+                .long("activity-infix")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("activity-suffix")
+                .long("activity-suffix")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("offset")
+                .long("offset")
+                .takes_value(true)
+                .help("Initial clock offset in milliseconds")
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("send-edge")
+                .long("send-edge")
+                .takes_value(true)
+                .possible_values(&["data", "control", "none"])
+                .required(false),
+        )
+        .arg(
+            Arg::with_name("recv-edge")
+                .long("recv-edge")
+                .takes_value(true)
+                .possible_values(&["data", "control", "none"])
+                .required(false),
+        )
         .get_matches();
 
     let num_workers = matches
@@ -337,12 +364,14 @@ fn main() {
     let phase_len = matches
         .value_of("phase-duration")
         .map(|m| m.parse::<u64>().expect("phase-duration must be u64"))
-        .unwrap_or(10) * 1_000_000; // ms -> ns
+        .unwrap_or(10)
+        * 1_000_000; // ms -> ns
 
     let offset = matches
         .value_of("clock-offset")
         .map(|m| m.parse::<u64>().expect("clock-offset must be u64"))
-        .unwrap_or(0) * 1_000_000; // ms -> ns
+        .unwrap_or(0)
+        * 1_000_000; // ms -> ns
 
     let activity = matches
         .value_of("activity")
@@ -382,8 +411,8 @@ fn main() {
 
     let log_path = matches.value_of("OUTPUT").unwrap();
 
-    let mut pag = PagState::create(config, offset, log_path)
-        .expect("failed to create output log file");
+    let mut pag =
+        PagState::create(config, offset, log_path).expect("failed to create output log file");
 
     for _ in 0..num_phases {
         pag.generate_pyramid_phase().unwrap();

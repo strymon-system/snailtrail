@@ -11,12 +11,12 @@ extern crate logformat;
 extern crate json;
 
 use std::env;
-use std::fs::File;
-use std::io::{Result, BufReader, BufWriter, Write, Error, ErrorKind};
 use std::error::Error as ErrorTrait;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Error, ErrorKind, Result, Write};
 
 use json::JsonValue;
-use logformat::{LogRecord, EventType, LogReadError};
+use logformat::{EventType, LogReadError, LogRecord};
 
 struct JsonWriter<W: Write> {
     writer: W,
@@ -142,11 +142,11 @@ fn convert(logfile: &str, json: &str) -> Result<()> {
         let pid = 0;
         let cat = format!("ActivityType::{:?}", record.activity_type);
         let id = JsonValue::from(record.correlator_id);
-        let args = object!{
+        let args = object! {
             &format!("{:?}", record.event_type) => format!("{:#?}", record)
         };
 
-        let mut event = object!{
+        let mut event = object! {
             "name" => name,
             "cat" => cat,
             "ts" => ts,

@@ -11,13 +11,13 @@ extern crate logformat;
 extern crate json;
 extern crate clap;
 
-use std::fs::File;
-use std::io::{Result, BufReader, BufWriter, Write};
-use std::error::Error as ErrorTrait;
 use std::collections::HashMap;
+use std::error::Error as ErrorTrait;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Result, Write};
 
 use json::JsonValue;
-use logformat::{LogRecord, EventType};
+use logformat::{EventType, LogRecord};
 
 struct JsonWriter<W: Write> {
     writer: W,
@@ -81,10 +81,9 @@ fn convert(logfile: &str, json: &str, skip: Option<usize>, take: Option<usize>) 
         let _r_id = record.remote_worker;
         let corr_id = record.correlator_id.expect("correlator id required");
 
-
         match record.event_type {
             EventType::Start | EventType::Sent => {
-                let event = object!{
+                let event = object! {
                     "worker" => w_id,
                     "start" => ts,
                     "type" => activity_type,

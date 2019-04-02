@@ -18,22 +18,22 @@ use abomonation::Abomonation;
 
 use timely;
 use timely::dataflow::channels::pact;
-use timely::dataflow::operators::{Accumulate, Filter, Input, Inspect, Map, Probe, Binary, Unary};
 use timely::dataflow::operators::aggregation::Aggregate;
+use timely::dataflow::operators::exchange::Exchange;
 use timely::dataflow::operators::input::Handle as InputHandle;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
-use timely::dataflow::operators::exchange::Exchange;
-use timely::dataflow::Scope;
+use timely::dataflow::operators::{Accumulate, Binary, Filter, Input, Inspect, Map, Probe, Unary};
 use timely::dataflow::scopes::Root;
+use timely::dataflow::Scope;
 use timely::progress::nested::product::Product;
 use timely::progress::timestamp::RootTimestamp;
 use timely_communication::{Allocate, Allocator, WorkerGuards};
 
+use input;
 use logformat::{LogRecord, Worker};
+use output::{DumpHistogram, DumpPAG};
 use BuildProgramActivityGraph;
 use {PagOutput, TraverseNoWaiting};
-use output::{DumpPAG, DumpHistogram};
-use input;
 
 use snailtrail::exploration::{BetweennessCentrality, SinglePath};
 use snailtrail::graph::SrcDst;
@@ -60,7 +60,6 @@ pub struct Config {
     pub disable_bc: bool,
     pub waiting_message: u64,
 }
-
 
 #[derive(Abomonation, Debug, Clone, Default)]
 struct Summary<T: Abomonation> {
@@ -135,10 +134,12 @@ impl ProbeWrapper {
 
     pub fn print_and_advance(&mut self) {
         while !self.probe.less_than(&RootTimestamp::new(self.current)) {
-            println!("EPOCH {} {:?} {:?}",
-                     self.name,
-                     self.current,
-                     time::precise_time_ns());
+            println!(
+                "EPOCH {} {:?} {:?}",
+                self.name,
+                self.current,
+                time::precise_time_ns()
+            );
             // probe is past
             self.current += 1;
         }
@@ -149,12 +150,14 @@ impl ProbeWrapper {
     }
 }
 
-fn feed_input(mut input: InputHandle<u64, LogRecord>,
-              input_records: Vec<LogRecord>,
-              mut probes: Vec<ProbeWrapper>,
-              computation: &mut Root<Allocator>,
-              window_size_ns: u64,
-              epochs: u64) {
+fn feed_input(
+    mut input: InputHandle<u64, LogRecord>,
+    input_records: Vec<LogRecord>,
+    mut probes: Vec<ProbeWrapper>,
+    computation: &mut Root<Allocator>,
+    window_size_ns: u64,
+    epochs: u64,
+) {
     let mut last_probe = probes.pop().expect("last probe has to exist");
 
     let mut old_epoch = 0;
@@ -181,8 +184,9 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
             // Allow the computation to run until all data has been processed.
             // TODO: This will crash on timestamps < 3
             while last_probe
-                      .probe
-                      .less_than(&RootTimestamp::new(input.time().inner - epochs)) {
+                .probe
+                .less_than(&RootTimestamp::new(input.time().inner - epochs))
+            {
                 for probe in &mut probes {
                     probe.print_and_advance();
                 }
@@ -200,8 +204,9 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
         node_count += 1;
     }
     while last_probe
-              .probe
-              .less_than(&RootTimestamp::new(input.time().inner)) {
+        .probe
+        .less_than(&RootTimestamp::new(input.time().inner))
+    {
         for probe in &mut probes {
             probe.print_and_advance();
         }
@@ -218,33 +223,35 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
 // Read and decode all log records from a log file and give them as input in a single epoch.  In a
 // real computation we'd read input in the background and allow the computation to progress by
 // continually making steps.
-fn read_and_execute_trace_from_file(log_path: &str,
-                                    input: InputHandle<u64, LogRecord>,
-                                    probes: Vec<ProbeWrapper>,
-                                    computation: &mut Root<Allocator>,
-                                    window_size_ns: u64,
-                                    epochs: u64,
-                                    message_delay: Option<u64>) {
-    let input_records = input::read_sorted_trace_from_file_and_cut_messages(log_path,
-                                                                            message_delay);
-    feed_input(input,
-               input_records,
-               probes,
-               computation,
-               window_size_ns,
-               epochs);
+fn read_and_execute_trace_from_file(
+    log_path: &str,
+    input: InputHandle<u64, LogRecord>,
+    probes: Vec<ProbeWrapper>,
+    computation: &mut Root<Allocator>,
+    window_size_ns: u64,
+    epochs: u64,
+    message_delay: Option<u64>,
+) {
+    let input_records =
+        input::read_sorted_trace_from_file_and_cut_messages(log_path, message_delay);
+    feed_input(
+        input,
+        input_records,
+        probes,
+        computation,
+        window_size_ns,
+        epochs,
+    );
 }
-
 
 pub fn run_dataflow(config: Config) -> Result<WorkerGuards<()>, String> {
     timely::execute_from_args(config.timely_args.clone().into_iter(), move |computation| {
         let config = config.clone();
         if computation.index() == 0 {
-            println!("Input parameters: threshold {}, window size {}ns, verbosity {}, 1+{} epochs",
-                     config.threshold,
-                     config.window_size_ns,
-                     config.verbose,
-                     config.epochs);
+            println!(
+                "Input parameters: threshold {}, window size {}ns, verbosity {}, 1+{} epochs",
+                config.threshold, config.window_size_ns, config.verbose, config.epochs
+            );
         }
 
         let (input, probes) =
@@ -256,44 +263,50 @@ pub fn run_dataflow(config: Config) -> Result<WorkerGuards<()>, String> {
             for (probe, name) in probes.into_iter().zip(names.into_iter()) {
                 probe_wrappers.push(ProbeWrapper::new(StdFrom::from(name), probe));
             }
-            read_and_execute_trace_from_file(&config.log_path,
-                                             input,
-                                             probe_wrappers,
-                                             computation,
-                                             config.window_size_ns,
-                                             config.epochs,
-                                             config.message_delay);
+            read_and_execute_trace_from_file(
+                &config.log_path,
+                input,
+                probe_wrappers,
+                computation,
+                config.window_size_ns,
+                config.epochs,
+                config.message_delay,
+            );
         }
     })
 }
 
-pub fn build_dataflow<'a, A, S>
-    (config: Config,
-     scope: &mut S)
-     -> (InputHandle<u64, LogRecord>, Vec<ProbeHandle<Product<RootTimestamp, u64>>>)
-    where A: Allocate,
-          S: Scope + Input<'a, A, u64>
+pub fn build_dataflow<'a, A, S>(
+    config: Config,
+    scope: &mut S,
+) -> (
+    InputHandle<u64, LogRecord>,
+    Vec<ProbeHandle<Product<RootTimestamp, u64>>>,
+)
+where
+    A: Allocate,
+    S: Scope + Input<'a, A, u64>,
 {
     let (input, stream) = scope.new_input();
     if false {
         stream.dump_histogram();
     }
-    let pag_output = stream.build_program_activity_graph(config.threshold,
-                                                         config.waiting_message,
-                                                         config.window_size_ns,
-                                                         config.insert_waiting_edges);
+    let pag_output = stream.build_program_activity_graph(
+        config.threshold,
+        config.waiting_message,
+        config.window_size_ns,
+        config.insert_waiting_edges,
+    );
 
     let probe_pag = pag_output.filter(|_| false).exchange(|_| 0).probe();
     // Dump all program activities to the console for debugging
     if config.dump_pag {
-        pag_output
-            .exchange(|_| 0)
-            .inspect_batch(|time, data| {
-                               println!("[EPOCH {}]", time.inner);
-                               for datum in data {
-                                   println!("  {:?}", datum);
-                               }
-                           });
+        pag_output.exchange(|_| 0).inspect_batch(|time, data| {
+            println!("[EPOCH {}]", time.inner);
+            for datum in data {
+                println!("  {:?}", datum);
+            }
+        });
     }
 
     // Crete a DOT file of the graph for each epoch?
@@ -314,12 +327,11 @@ pub fn build_dataflow<'a, A, S>
                 .map(|c| println!("COUNT {:?} {:?} pag_output {:?}", ts.inner, index, c));
         });
     if config.verbose > 1 {
-        pag_output.inspect_batch(move |ts, cs| for c in cs {
-                                     println!("CONTENT {:?} {:?} pag_output {:?}",
-                                              ts.inner,
-                                              index,
-                                              c)
-                                 });
+        pag_output.inspect_batch(move |ts, cs| {
+            for c in cs {
+                println!("CONTENT {:?} {:?} pag_output {:?}", ts.inner, index, c)
+            }
+        });
     }
 
     if config.disable_bc {
@@ -327,64 +339,58 @@ pub fn build_dataflow<'a, A, S>
     }
 
     let forward = pag_output.filter(|output| match *output {
-                                        PagOutput::StartNode(_) => true,
-                                        _ => false,
-                                    });
+        PagOutput::StartNode(_) => true,
+        _ => false,
+    });
 
-    forward
-        .exchange(|_| 0)
-        .count()
-        .inspect_batch(move |ts, c| {
-                           c.first()
-                               .map(|c| {
-                                        println!("COUNT {:?} {:?} forward {:?}", ts.inner, index, c)
-                                    });
-                       });
+    forward.exchange(|_| 0).count().inspect_batch(move |ts, c| {
+        c.first()
+            .map(|c| println!("COUNT {:?} {:?} forward {:?}", ts.inner, index, c));
+    });
     if config.verbose > 1 {
-        forward.inspect_batch(move |ts, cs| for c in cs {
-                                  println!("CONTENT {:?} {:?} forward {:?}", ts.inner, index, c)
-                              });
+        forward.inspect_batch(move |ts, cs| {
+            for c in cs {
+                println!("CONTENT {:?} {:?} forward {:?}", ts.inner, index, c)
+            }
+        });
     }
 
     let backward = pag_output.filter(|output| match *output {
-                                         PagOutput::EndNode(_) => true,
-                                         _ => false,
-                                     });
+        PagOutput::EndNode(_) => true,
+        _ => false,
+    });
 
     if config.verbose > 0 {
-        backward
-            .count()
-            .inspect_batch(move |ts, c| {
-                c.first()
-                    .map(|c| println!("COUNT {:?} {:?} backward {:?}", ts.inner, index, c));
-            });
+        backward.count().inspect_batch(move |ts, c| {
+            c.first()
+                .map(|c| println!("COUNT {:?} {:?} backward {:?}", ts.inner, index, c));
+        });
         if config.verbose > 1 {
-            backward.inspect_batch(move |ts, cs| for c in cs {
-                                       println!("CONTENT {:?} {:?} backward {:?}",
-                                                ts.inner,
-                                                index,
-                                                c)
-                                   });
+            backward.inspect_batch(move |ts, cs| {
+                for c in cs {
+                    println!("CONTENT {:?} {:?} backward {:?}", ts.inner, index, c)
+                }
+            });
         }
     }
 
     // We do not want to traverse Waiting edges so remove them from the PAG
     let graph = pag_output.filter(|rec| match *rec {
-                                      PagOutput::Edge(_) => true,
-                                      _ => false,
-                                  });
+        PagOutput::Edge(_) => true,
+        _ => false,
+    });
 
     if config.verbose > 0 {
-        graph
-            .count()
-            .inspect_batch(move |ts, c| {
-                c.first()
-                    .map(|c| println!("COUNT {:?} {:?} graph {:?}", ts.inner, index, c));
-            });
+        graph.count().inspect_batch(move |ts, c| {
+            c.first()
+                .map(|c| println!("COUNT {:?} {:?} graph {:?}", ts.inner, index, c));
+        });
         if config.verbose > 1 {
-            graph.inspect_batch(move |ts, cs| for c in cs {
-                                    println!("CONTENT {:?} {:?} graph {:?}", ts.inner, index, c)
-                                });
+            graph.inspect_batch(move |ts, cs| {
+                for c in cs {
+                    println!("CONTENT {:?} {:?} graph {:?}", ts.inner, index, c)
+                }
+            });
         }
     }
 
@@ -392,10 +398,11 @@ pub fn build_dataflow<'a, A, S>
     let backward_count = backward.map(|e| (e, From::from(1u8)));
 
     // Perform edge ranking by counting all distinct paths within each PAG slice
-    let bc =
-        graph.betweenness_centrality::<TraverseNoWaiting, f64>(&forward_count,
-                                                               &backward_count,
-                                                               "bc");
+    let bc = graph.betweenness_centrality::<TraverseNoWaiting, f64>(
+        &forward_count,
+        &backward_count,
+        "bc",
+    );
 
     // Crete a DOT file of the graph for each epoch?
     if config.write_bc_dot {
@@ -409,45 +416,45 @@ pub fn build_dataflow<'a, A, S>
         return (input, vec![probe_pag, probe_bc]);
     }
 
-    bc.exchange(|_| 0)
-        .count()
-        .inspect_batch(move |ts, c| {
-                           c.first()
-                               .map(|c| {
-                                        println!("COUNT {:?} {:?} bc {:?}", ts.inner, index, c)
-                                    });
-                       });
+    bc.exchange(|_| 0).count().inspect_batch(move |ts, c| {
+        c.first()
+            .map(|c| println!("COUNT {:?} {:?} bc {:?}", ts.inner, index, c));
+    });
     if config.verbose > 1 {
-        bc.inspect_batch(move |ts, cs| for c in cs {
-                             println!("CONTENT {:?} {:?} bc {:?}", ts.inner, index, c)
-                         });
+        bc.inspect_batch(move |ts, cs| {
+            for c in cs {
+                println!("CONTENT {:?} {:?} bc {:?}", ts.inner, index, c)
+            }
+        });
     }
 
     // Pick a random seed
     let mut accums = HashMap::new();
-    let seed_edge = forward.unary_notify(pact::Exchange::new(|_| 0),
-                                         "SeedEdge",
-                                         vec![],
-                                         move |input, output, notificator| {
-        input.for_each(|time, data| {
-                           accums
-                               .entry(*time.time())
-                               .or_insert_with(Vec::new)
-                               .extend_from_slice(data);
-                           notificator.notify_at(time);
-                       });
+    let seed_edge = forward.unary_notify(
+        pact::Exchange::new(|_| 0),
+        "SeedEdge",
+        vec![],
+        move |input, output, notificator| {
+            input.for_each(|time, data| {
+                accums
+                    .entry(*time.time())
+                    .or_insert_with(Vec::new)
+                    .extend_from_slice(data);
+                notificator.notify_at(time);
+            });
 
-        notificator.for_each(|time, _count, _notify| {
-            if let Some(accum) = accums.remove(time.time()) {
-                // The output stream will contain either zero or one element.  In the common
-                // case, we pick a single random edge per epoch and emit it, however, some
-                // epochs are empty and we cannot randonly sample.
-                if let Some(elem) = rand::thread_rng().choose(&accum[..]) {
-                    output.session(&time).give(elem.clone());
+            notificator.for_each(|time, _count, _notify| {
+                if let Some(accum) = accums.remove(time.time()) {
+                    // The output stream will contain either zero or one element.  In the common
+                    // case, we pick a single random edge per epoch and emit it, however, some
+                    // epochs are empty and we cannot randonly sample.
+                    if let Some(elem) = rand::thread_rng().choose(&accum[..]) {
+                        output.session(&time).give(elem.clone());
+                    }
                 }
-            }
-        });
-    });
+            });
+        },
+    );
 
     // Single-path bc
     let sp = graph.single_path(&seed_edge); //.inspect_ts(move |ts, c| println!("{:?} {:?} Edge: {:?}", ts.inner, index, c));
@@ -457,128 +464,136 @@ pub fn build_dataflow<'a, A, S>
 
     let mut bc_map = HashMap::new();
     let mut forward_map = HashMap::new();
-    let count = bc.binary_notify(&forward,
-                                 pact::Exchange::new(|_| 0),
-                                 pact::Exchange::new(|_| 0),
-                                 "count",
-                                 Vec::new(),
-                                 move |input1, input2, output, notificator| {
-        input1.for_each(|time, data| {
-            let bc_entry = bc_map.entry(*time.time()).or_insert_with(HashMap::new);
-            for (d, count) in data.drain(..) {
-                *bc_entry
-                     .entry(d.src().expect("edge w/o src"))
-                     .or_insert(0u64) += count as u64;
-            }
-            notificator.notify_at(time);
-        });
-        input2.for_each(|time, data| {
-                            forward_map
-                                .entry(*time.time())
-                                .or_insert_with(Vec::new)
-                                .extend(data.drain(..));
-                            notificator.notify_at(time);
-                        });
-        notificator.for_each(|time, _count, _notificator| {
-            let mut sum = 0u64;
-            if let Some(forward_edges) = forward_map.remove(time.time()) {
-                if let Some(bc_entry) = bc_map.get(time.time()) {
-                    for edge in &forward_edges {
-                        if let Some(bc) =
-                            bc_entry.get(&edge.dst().expect("forward without dst found")) {
-                            sum += sum.same_type(*bc);
+    let count = bc.binary_notify(
+        &forward,
+        pact::Exchange::new(|_| 0),
+        pact::Exchange::new(|_| 0),
+        "count",
+        Vec::new(),
+        move |input1, input2, output, notificator| {
+            input1.for_each(|time, data| {
+                let bc_entry = bc_map.entry(*time.time()).or_insert_with(HashMap::new);
+                for (d, count) in data.drain(..) {
+                    *bc_entry
+                        .entry(d.src().expect("edge w/o src"))
+                        .or_insert(0u64) += count as u64;
+                }
+                notificator.notify_at(time);
+            });
+            input2.for_each(|time, data| {
+                forward_map
+                    .entry(*time.time())
+                    .or_insert_with(Vec::new)
+                    .extend(data.drain(..));
+                notificator.notify_at(time);
+            });
+            notificator.for_each(|time, _count, _notificator| {
+                let mut sum = 0u64;
+                if let Some(forward_edges) = forward_map.remove(time.time()) {
+                    if let Some(bc_entry) = bc_map.get(time.time()) {
+                        for edge in &forward_edges {
+                            if let Some(bc) =
+                                bc_entry.get(&edge.dst().expect("forward without dst found"))
+                            {
+                                sum += sum.same_type(*bc);
+                            }
                         }
                     }
                 }
-            }
-            bc_map.remove(time.time());
-            forward_map.remove(time.time());
-            output.session(&time).give(sum);
-        });
-    });
+                bc_map.remove(time.time());
+                forward_map.remove(time.time());
+                output.session(&time).give(sum);
+            });
+        },
+    );
 
     count.inspect_batch(move |ts, c| {
-                            c.first()
-                                .map(|c| {
-                                         println!("COUNT {:?} {:?} paths {:?}", ts.inner, index, c)
-                                     });
-                        });
+        c.first()
+            .map(|c| println!("COUNT {:?} {:?} paths {:?}", ts.inner, index, c));
+    });
 
     // group aggregates by (activity_type, operator_id, worker_id)
     let probe_summary = {
-        let edge_weight_stream_triples = bc.unary_stream(pact::Pipeline,
-                                                         "MapToSummary",
-                                                         move |input, output| {
-            input.for_each(|time, data| {
-                output
-                    .session(&time)
-                    .give_iterator(data.drain(..)
-                                       .map(|(edge, bc)| {
-                        let w = edge.weight();
-                        let window_size_ns = config.window_size_ns;
-                        let window_start_time = time.time().inner;
-                        let crosses_start = edge.source_timestamp() == window_start_time * window_size_ns - 1;
-                        let crosses_end = edge.destination_timestamp() ==
-                            window_start_time * window_size_ns + window_size_ns;
-                        let crosses = match (crosses_start, crosses_end) {
-                            (true, true) => 'B',
-                            (true, false) => 'S',
-                            (false, true) => 'E',
-                            (false, false) => 'N',
-                        };
-                        let edge_type = match edge {
-                            PagOutput::Edge(ref e) => {
-                                (e.edge_type as u8,
-                                 e.operator_id.unwrap_or(std::u8::MAX as u32) as u8,
-                                 if e.edge_type.is_worker_local() {
-                                     ActivityWorkers::Local(e.source.worker_id)
-                                 } else {
-                                     ActivityWorkers::Remote(e.source.worker_id,
-                                                             e.destination.worker_id)
-                                 },
-                                 crosses)
-                            }
-                            et => panic!("Unknown input: {:?}", et),
-                        };
-                        let summary = Summary {
-                            weight: w,
-                            bc: bc,
-                            weighted_bc: bc * bc.same_type(ImpreciseFrom::from(w)),
-                            count: 1,
-                        };
-                        (edge_type, summary)
-                    }));
+        let edge_weight_stream_triples =
+            bc.unary_stream(pact::Pipeline, "MapToSummary", move |input, output| {
+                input.for_each(|time, data| {
+                    output
+                        .session(&time)
+                        .give_iterator(data.drain(..).map(|(edge, bc)| {
+                            let w = edge.weight();
+                            let window_size_ns = config.window_size_ns;
+                            let window_start_time = time.time().inner;
+                            let crosses_start =
+                                edge.source_timestamp() == window_start_time * window_size_ns - 1;
+                            let crosses_end = edge.destination_timestamp()
+                                == window_start_time * window_size_ns + window_size_ns;
+                            let crosses = match (crosses_start, crosses_end) {
+                                (true, true) => 'B',
+                                (true, false) => 'S',
+                                (false, true) => 'E',
+                                (false, false) => 'N',
+                            };
+                            let edge_type = match edge {
+                                PagOutput::Edge(ref e) => (
+                                    e.edge_type as u8,
+                                    e.operator_id.unwrap_or(std::u8::MAX as u32) as u8,
+                                    if e.edge_type.is_worker_local() {
+                                        ActivityWorkers::Local(e.source.worker_id)
+                                    } else {
+                                        ActivityWorkers::Remote(
+                                            e.source.worker_id,
+                                            e.destination.worker_id,
+                                        )
+                                    },
+                                    crosses,
+                                ),
+                                et => panic!("Unknown input: {:?}", et),
+                            };
+                            let summary = Summary {
+                                weight: w,
+                                bc: bc,
+                                weighted_bc: bc * bc.same_type(ImpreciseFrom::from(w)),
+                                count: 1,
+                            };
+                            (edge_type, summary)
+                        }));
+                });
             });
-        });
-        let summary_triples = edge_weight_stream_triples
-            .aggregate::<_, Summary<_>, _, _, _>(|_key, val, agg| *agg += val,
-                                                 |key, agg| (key, agg),
-                                                 |key| hash_code(key));
+        let summary_triples = edge_weight_stream_triples.aggregate::<_, Summary<_>, _, _, _>(
+            |_key, val, agg| *agg += val,
+            |key, agg| (key, agg),
+            |key| hash_code(key),
+        );
 
         if index == 0 {
-            println!("# SUMMARY epoch,activity,operator,src,dst,crosses,bc,weighted_bc,count,weight",);
+            println!(
+                "# SUMMARY epoch,activity,operator,src,dst,crosses,bc,weighted_bc,count,weight",
+            );
         }
         summary_triples
             .exchange(|_| 0)
-            .inspect_batch(move |ts, output| for &((activity_type, operator_id, ref workers, crosses),
-                                                   ref summary) in output {
-                               let worker_csv = match *workers {
-                                   ActivityWorkers::Local(w_id) => format!("{},{}", w_id, w_id),
-                                   ActivityWorkers::Remote(src, dst) => format!("{},{}", src, dst),
-                               };
-                               let data = format!("{},{},{},{},{},{},{},{},{}",
-                                                  ts.inner,
-                                                  activity_type,
-                                                  operator_id,
-                                                  worker_csv,
-                                                  crosses,
-                                                  summary.bc,
-                                                  summary.weighted_bc,
-                                                  summary.count,
-                                                  summary.weight);
+            .inspect_batch(move |ts, output| {
+                for &((activity_type, operator_id, ref workers, crosses), ref summary) in output {
+                    let worker_csv = match *workers {
+                        ActivityWorkers::Local(w_id) => format!("{},{}", w_id, w_id),
+                        ActivityWorkers::Remote(src, dst) => format!("{},{}", src, dst),
+                    };
+                    let data = format!(
+                        "{},{},{},{},{},{},{},{},{}",
+                        ts.inner,
+                        activity_type,
+                        operator_id,
+                        worker_csv,
+                        crosses,
+                        summary.bc,
+                        summary.weighted_bc,
+                        summary.count,
+                        summary.weight
+                    );
 
-                               println!("SUMMARY {}", data.to_string());
-                           })
+                    println!("SUMMARY {}", data.to_string());
+                }
+            })
             .probe()
     };
 
@@ -589,37 +604,48 @@ pub fn build_dataflow<'a, A, S>
             PagOutput::Edge(ref e) => (e.edge_type as u8, e.operator_id.unwrap_or(255) as u8),
             et => panic!("Unknown input: {:?}", et),
         };
-        (edge_type,
-         Summary {
-             weight: w,
-             bc: From::from(1u8),
-             weighted_bc: w,
-             count: 1,
-         })
+        (
+            edge_type,
+            Summary {
+                weight: w,
+                bc: From::from(1u8),
+                weighted_bc: w,
+                count: 1,
+            },
+        )
     });
-    let sp_summary =
-        e_weight.aggregate::<_, Summary<_>, _, _, _>(|_key, val, agg| *agg += val,
-                                                     |key, agg| (key, agg),
-                                                     |key| hash_code(key));
+    let sp_summary = e_weight.aggregate::<_, Summary<_>, _, _, _>(
+        |_key, val, agg| *agg += val,
+        |key, agg| (key, agg),
+        |key| hash_code(key),
+    );
 
-    sp_summary.inspect_batch(move |ts, output| for &(t, ref summary) in output {
-                                 println!("SP_SUMMARY {:?} {:?} {} {} {} {} {} {}",
-                                          ts.inner,
-                                          index,
-                                          t.0,
-                                          t.1,
-                                          summary.bc,
-                                          summary.weighted_bc,
-                                          summary.count,
-                                          summary.weight)
-                             });
+    sp_summary.inspect_batch(move |ts, output| {
+        for &(t, ref summary) in output {
+            println!(
+                "SP_SUMMARY {:?} {:?} {} {} {} {} {} {}",
+                ts.inner,
+                index,
+                t.0,
+                t.1,
+                summary.bc,
+                summary.weighted_bc,
+                summary.count,
+                summary.weight
+            )
+        }
+    });
 
     let probe_sp_summary = sp_summary.probe();
 
-    (input,
-     vec![probe_pag,
-          probe_bc,
-          probe_sp,
-          probe_summary,
-          probe_sp_summary])
+    (
+        input,
+        vec![
+            probe_pag,
+            probe_bc,
+            probe_sp,
+            probe_summary,
+            probe_sp_summary,
+        ],
+    )
 }
