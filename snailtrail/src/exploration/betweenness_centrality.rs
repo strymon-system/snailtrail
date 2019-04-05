@@ -15,14 +15,14 @@ use std::cmp::PartialOrd;
 use timely::Data;
 use timely::ExchangeData;
 use timely::dataflow::{Stream, Scope};
+use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::*;
 use timely::dataflow::operators::aggregation::Aggregate;
 
-use hash_code;
-
-use exploration::{Capacity, GroupExplore};
-
-use graph::{SrcDst, Partitioning};
+use crate::hash_code;
+use crate::exploration::Capacity;
+use crate::exploration::groupexplore::GroupExplore;
+use crate::graph::{SrcDst, Partitioning};
 
 
 /// Trait describing the operation `self * other * multiplicand`.
@@ -46,9 +46,32 @@ impl ScaleReduce for f64 {
 pub trait ExtendedData: Data + Eq + Hash + Copy + Debug {}
 impl<T: Data + Eq + Hash + Copy + Debug> ExtendedData for T {}
 
+/// Methods to push stream timestamps around
+pub trait PushTime<S: Scope<Timestamp = u64>, D: Data> {
+    /// Pushes a tuple's timestamp into its data, e.g. for exchanging based on timestamp
+    fn push_time(&self) -> Stream<S, (u64, D)>;
+}
+
+impl<S: Scope<Timestamp = u64>, D: Data> PushTime<S, D> for Stream<S, D> {
+    fn push_time(&self) -> Stream<S, (u64, D)> {
+        let mut vector = Vec::new();
+        self.unary(Pipeline, "PushTime", move |_, _| {
+            move |input, output| {
+                input.for_each(|cap, data| {
+                    data.swap(&mut vector);
+                    let mut session = output.session(&cap);
+                    for datum in vector.drain(..) {
+                        session.give((cap.time().clone(), datum));
+                    }
+                });
+            }
+        })
+    }
+}
+
 /// Compute the edge betweeness centrality for a generic graph.
 pub trait BetweennessCentrality<G, N, D1>
-    where G: Scope,
+    where G: Scope<Timestamp = u64>,
           N: ExtendedData + Partitioning,
           D1: SrcDst<N> + Data + Eq + Hash
 {
@@ -72,10 +95,9 @@ pub trait BetweennessCentrality<G, N, D1>
 }
 
 impl<G, N, D1> BetweennessCentrality<G, N, D1> for Stream<G, D1>
-    where G: Scope,
-          G::Timestamp: Hash + Copy,
+    where G: Scope<Timestamp = u64>,
           N: ExtendedData + Partitioning,
-          D1: SrcDst<N> + Data + Eq + Hash + Debug + Send
+          D1: SrcDst<N> + Data + Eq + Hash + Debug + Send + ExchangeData
 {
     fn betweenness_centrality<E, DO>(&self,
                                      forward_edges: &Stream<G, (D1, DO)>,
@@ -85,10 +107,9 @@ impl<G, N, D1> BetweennessCentrality<G, N, D1> for Stream<G, D1>
         where E: Capacity<D1, DO>,
               DO: ExchangeData + AddAssign + Debug + Copy + Default + Mul + PartialOrd + ScaleReduce
     {
-        let forward_edges = forward_edges.exchange_ts(|ts, _| hash_code(ts));
-        let backward_edges = backward_edges.exchange_ts(|ts, _| hash_code(ts));
-
-        let graph_stream = self.exchange_ts(|ts, _| hash_code(ts));
+        let forward_edges = forward_edges.push_time().exchange(|x| x.0).map(|x| x.1);
+        let backward_edges = backward_edges.push_time().exchange(|x| x.0).map(|x| x.1);
+        let graph_stream = self.push_time().exchange(|x| x.0).map(|x| x.1);
 
         let graph_stream_fwd = graph_stream.concat(&forward_edges.map(|(e, _)| e));
         let graph_stream_bwd = graph_stream.concat(&backward_edges.map(|(e, _)| e));
@@ -110,7 +131,7 @@ impl<G, N, D1> BetweennessCentrality<G, N, D1> for Stream<G, D1>
 
         // Compute betweeness centrality
         let combined = combined.filter(|&(ref e, _)| e.src().is_some() && e.dst().is_some());
-        let result = combined.aggregate::<_,Vec<DO>,_,_,_>(
+        combined.aggregate::<_,Vec<DO>,_,_,_>(
             |_key, val, agg| agg.push(val),
             |key, mut agg| {
                 agg.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -133,7 +154,6 @@ impl<G, N, D1> BetweennessCentrality<G, N, D1> for Stream<G, D1>
                     },
                 }
             },
-            |key| hash_code(key));
-        result
+            |key| hash_code(key))
     }
 }

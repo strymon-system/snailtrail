@@ -1,10 +1,11 @@
 [package]
 name = "snailtrail"
-version = "0.1.0"
+version = "0.2.0"
+edition = "2018"
 
 [dependencies]
-abomonation = "^0.4"
+abomonation = "^0.7"
+# @TODO: replace with chrono
 time = "^0.1"
-timely = "0.3.0"
-rand = "^0.3"
-
+timely = "^0.9"
+rand = "^0.6"

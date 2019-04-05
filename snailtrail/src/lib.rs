@@ -36,8 +36,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use time;
 
-    use graph::{SrcDst, Partitioning};
-    use exploration::{UnboundCapacity, BetweennessCentrality};
+    use crate::graph::{SrcDst, Partitioning};
+    use crate::exploration::{UnboundCapacity, BetweennessCentrality};
 
     use timely;
     use timely::dataflow::operators::*;
@@ -80,8 +80,6 @@ mod tests {
     }
 
     unsafe_abomonate!(Edge: src, dst);
-
-    type Timestamp = u32;
 
     #[test]
     fn it_works() {
@@ -129,13 +127,13 @@ mod tests {
             let send = send.lock().unwrap().clone();
 
             let (mut graph_input, mut edge_input, mut edge_input2) =
-                root.dataflow::<Timestamp, _, _>(move |scope| {
+                root.dataflow(move |scope| {
 
                 let (graph_input, graph_stream) = scope.new_input();
                 let (edge_input, forward_stream) = scope.new_input();
                 let (edge_input2, backward_stream) = scope.new_input();
 
-                let result = graph_stream.betweenness_centrality::<UnboundCapacity, u64>(&forward_stream, &backward_stream, "comp");
+                let result = graph_stream.betweenness_centrality::<UnboundCapacity, _>(&forward_stream, &backward_stream, "comp");
                 // let result = result.inspect_batch(move |t, x| println!("[{:?}] {:?} -> {:?}", index, t, x));
                 result.capture_into(send);
                 let weight = result.map(|(edge, bc)| (edge, bc));

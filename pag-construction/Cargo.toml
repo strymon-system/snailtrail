@@ -1,16 +1,16 @@
 [package]
 name = "pag-construction"
-version = "0.1.0"
+version = "0.2.0"
+edition = "2018"
 
 [dependencies]
-abomonation = "0.4"
+abomonation = "0.7"
+abomonation_derive = "0.3"
 clap = "*"
 time = "*"
-timely = "^0.3"
-timely_communication = "0.1.8"
-logformat = { version = "0.1.0", path = "../logformat/rust" }
-snailtrail = { version = "0.1.0", path = "../snailtrail" }
-abomonation_derive = "0.2.3"
+timely = "^0.9"
+logformat = { version = "0.2.0", path = "../logformat/rust" }
+snailtrail = { version = "0.2.0", path = "../snailtrail" }
 rand = "*"
-rayon = "^0.9.0"
+rayon = "^1.0"
 svg = "^0.5.7"

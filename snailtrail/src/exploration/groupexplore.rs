@@ -16,11 +16,11 @@ use std::rc::Rc;
 use timely::Data;
 use timely::ExchangeData;
 use timely::dataflow::{Stream, Scope};
-use timely::dataflow::operators::Binary;
+use timely::dataflow::operators::generic::operator::Operator;
 use timely::dataflow::channels::pact::Pipeline;
 
-use graph::Partitioning;
-use exploration::Capacity;
+use crate::graph::Partitioning;
+use crate::exploration::Capacity;
 
 /// A trait defining an interface to explore a graph.
 pub trait GroupExplore<G: Scope,
@@ -117,6 +117,9 @@ impl<G, D1, DO, K> GroupExplore<G, D1, DO, K> for Stream<G, D1>
 
         let stream: &Stream<G, D1> = self;
 
+        let mut graph_vector = Vec::new();
+        let mut frontier_vector = Vec::new();
+
         stream.binary_notify(frontier_stream,
                              Pipeline,
                              Pipeline,
@@ -125,7 +128,9 @@ impl<G, D1, DO, K> GroupExplore<G, D1, DO, K> for Stream<G, D1>
                              move |graph, frontier, output, notificator| {
             graph.for_each(|time, data| {
                 let t = time.time().clone();
-                for datum in data.drain(..) {
+                data.swap(&mut graph_vector);
+                let time = time.retain();
+                for datum in graph_vector.drain(..) {
                     if let Some(j) = join(&datum) {
                         let node_info = node_data
                             .entry(t.clone())
@@ -149,13 +154,14 @@ impl<G, D1, DO, K> GroupExplore<G, D1, DO, K> for Stream<G, D1>
             });
 
             frontier.for_each(|time, data| {
-                for datum in data.drain(..) {
+                data.swap(&mut frontier_vector);
+                for datum in frontier_vector.drain(..) {
                     frontier_stash
                         .entry(time.time().clone())
                         .or_insert_with(VecDeque::new)
                         .push_back(datum);
                 }
-                notificator.notify_at(time);
+                notificator.notify_at(time.retain().clone());
             });
 
             notificator.for_each(|time, _, _| {

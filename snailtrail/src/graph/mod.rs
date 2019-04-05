@@ -25,7 +25,7 @@ pub trait SrcDst<N: Partitioning> {
 
 impl<N: Partitioning> Partitioning for Option<N> {
     fn partition(&self) -> u64 {
-        self.into_iter().map(|x| x.partition()).sum()
+        self.iter().map(Partitioning::partition).sum()
     }
 }
 

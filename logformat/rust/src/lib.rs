@@ -9,11 +9,8 @@
 ///! Data structure and (de)serialization for a `LogRecord`
 
 
-extern crate rmp as msgpack;
 #[macro_use]
 extern crate enum_primitive_derive;
-extern crate num_traits;
-extern crate abomonation;
 #[macro_use]
 extern crate abomonation_derive;
 
@@ -21,6 +18,7 @@ use std::io::{Write, Read};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use msgpack::decode::NumValueReadError;
+use rmp as msgpack;
 
 #[derive(Primitive, Abomonation, PartialEq, Debug, Clone, Copy, Hash, Eq, PartialOrd, Ord)]
 pub enum ActivityType {

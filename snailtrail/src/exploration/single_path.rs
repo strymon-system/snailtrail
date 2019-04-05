@@ -7,29 +7,27 @@
 // except according to those terms.
 
 use std;
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::fmt::Debug;
-
-use timely::Data;
-use timely::dataflow::{Stream, Scope};
-use timely::dataflow::operators::*;
-
-use std::collections::HashMap;
-
-use graph::{SrcDst, Partitioning};
-use timely::progress::Timestamp;
-use timely::progress::nested::product::Product;
-use timely::dataflow::channels::pact::Exchange;
-
 use std::rc::Rc;
 
-use exploration::rand::{Rng, thread_rng};
+use timely::dataflow::channels::pact::Exchange;
+use timely::dataflow::operators::*;
+use timely::dataflow::{Stream, Scope};
+use timely::order::Product;
+use timely::progress::Timestamp;
+use timely::Data;
+
+use crate::exploration::rand::prelude::SliceRandom;
+use crate::exploration::rand::thread_rng;
+use crate::graph::{Partitioning, SrcDst};
 
 
 pub trait ExtendedData: Data + Eq + Hash + Copy + Debug {}
 impl<T: Data + Eq + Hash + Copy + Debug> ExtendedData for T {}
 
-pub trait SinglePath<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + Data + Eq + Hash>
+pub trait SinglePath<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + Data + Eq + Hash + abomonation::Abomonation>
      {
     /// Traverses a path in a graph starting from a seed node.
     ///
@@ -41,7 +39,7 @@ pub trait SinglePath<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + D
     fn single_path(&self, edge: &Stream<G, D1>) -> Stream<G, D1> where G::Timestamp: Hash + Copy;
 }
 
-impl<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + Data + Eq + Hash + Debug + Send> SinglePath<G, N, D1> for Stream<G, D1> {
+impl<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + Data + Eq + Hash + Debug + Send + std::marker::Sync + abomonation::Abomonation> SinglePath<G, N, D1> for Stream<G, D1> {
     fn single_path(&self, edge: &Stream<G, D1>) -> Stream<G, D1>
         where G::Timestamp: Hash+Copy
     {
@@ -50,9 +48,8 @@ impl<G: Scope, N: ExtendedData + Partitioning, D1: SrcDst<N> + Data + Eq + Hash 
 let graph_stream = self; //.concat(&forward_edges); //.concat(&backward_edges);
 
 // Traverse a transient path
-        let path = self.scope().scoped(|inner| {
-
-            let (helper, cycle) = inner.loop_variable(std::u32::MAX, 1);
+        self.scope().scoped("traversal", |inner| {
+            let (helper, cycle) = inner.loop_variable(1);
 
             let seed = edge.enter(inner).concat(&cycle);
 
@@ -60,7 +57,7 @@ let graph_stream = self; //.concat(&forward_edges); //.concat(&backward_edges);
 
             output.connect_loop(helper);
             output.leave()
-        });
+        })
 
 /*
         // Compute single-path summary
@@ -69,12 +66,10 @@ let graph_stream = self; //.concat(&forward_edges); //.concat(&backward_edges);
             |key, agg| { (key, agg.iter().sum()) },
             |key| hash_code(key));
         */
-
-path //.flat_map(|x| x.into_iter())
     }
 }
 
-pub trait TraverseFrom<G: Scope, D1: Data, K: Hash + Eq + Copy + Data + Partitioning + 'static>
+pub trait TraverseFrom<G: Scope, D1: Data + abomonation::Abomonation, K: Hash + Eq + Copy + Data + Partitioning + 'static>
      {
     /// Explores a graph iteratively based on a frontier stream.
     ///
@@ -97,7 +92,7 @@ pub trait TraverseFrom<G: Scope, D1: Data, K: Hash + Eq + Copy + Data + Partitio
 
 impl<TOuter: Timestamp,
      G: Scope<Timestamp = Product<TOuter, u32>>,
-     D1: Data + Debug + Hash + Eq + Send,
+     D1: Data + Debug + Hash + Eq + Send + std::marker::Sync + abomonation::Abomonation,
      K: Hash + Eq + Copy + Data + Partitioning + Debug + 'static> TraverseFrom<G, D1, K>
     for Stream<G, D1> {
     fn traverse_from<LG, LJ, TO, TS>(&self,
@@ -123,6 +118,8 @@ impl<TOuter: Timestamp,
         let join_exchange = join.clone();
         let exchange1 = Exchange::new(move |e| graph_exchange(e).partition());
         let exchange2 = Exchange::new(move |e| join_exchange(e).partition());
+        let mut vector1 = Vec::new();
+        let mut vector2 = Vec::new();
         self.binary_notify(seed,
                            exchange1,
                            exchange2,
@@ -130,24 +127,26 @@ impl<TOuter: Timestamp,
                            Vec::new(),
                            move |input1, input2, output, notificator| {
             // Pull graph edges
-            input1.for_each(|time, data| {
-                let key = snapshots.entry(*outer(&time)).or_insert_with(HashMap::new);
-                for d in data.drain(..) {
+            input1.for_each(|cap, data| {
+                let key = snapshots.entry(*outer(&cap)).or_insert_with(HashMap::new);
+                data.swap(&mut vector1);
+                for d in vector1.drain(..) {
                     let slot = key.entry(group(&d)).or_insert_with(Vec::new);
                     slot.push(d);
                 }
-                let mut cap = time.time().clone();
-                cap.inner = std::u32::MAX - 1;
-                notificator.notify_at(time.delayed(&cap));
-                notificator.notify_at(time.clone());
+                let mut time = cap.time().clone();
+                time.inner = std::u32::MAX - 1;
+                notificator.notify_at(cap.delayed(&time));
+                notificator.notify_at(cap.retain().clone());
             });
             // Pull edge seeds
             input2.for_each(|time, data| {
                                 let slot = seeds.entry(*outer(&time)).or_insert_with(Vec::new);
-                                for d in data.drain(..) {
+                data.swap(&mut vector2);
+                                for d in vector2.drain(..) {
                                     slot.push(d);
                                 }
-                                notificator.notify_at(time);
+                                notificator.notify_at(time.retain());
                             });
             notificator.for_each(|time, _count, _notificator| {
                 if time.time().inner < std::u32::MAX - 1 {
@@ -162,8 +161,9 @@ impl<TOuter: Timestamp,
                                 // Pick a next edge to visit at random
                                 if let Some(next_edges) = snapshot.get(&join(&seed)) {
                                     //.expect("No edges found.");
-                                    let next = thread_rng()
-                                        .choose(&next_edges[..])
+                                    let mut rng = thread_rng();
+                                    let next = next_edges[..]
+                                        .choose(&mut rng)
                                         .expect("No edges found")
                                         .clone(); //next_edges[0].clone();
                                     session.give(next);

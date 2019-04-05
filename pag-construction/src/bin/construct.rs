@@ -6,17 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern crate clap;
-extern crate logformat;
-extern crate pag_construction;
-extern crate abomonation;
-extern crate rand;
-extern crate time;
-extern crate timely;
-extern crate timely_communication;
-
-extern crate snailtrail;
-
 use std::str::FromStr;
 
 use clap::{App, Arg};

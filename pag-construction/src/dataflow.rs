@@ -10,37 +10,37 @@ use std;
 use std::collections::HashMap;
 use std::convert::From as StdFrom;
 
-use rand;
+use rand::seq::SliceRandom;
 
 use time;
 
 use abomonation::Abomonation;
 
 use timely;
+use timely::communication::allocator::Allocate;
+use timely::communication::initialize::WorkerGuards;
 use timely::dataflow::channels::pact;
-use timely::dataflow::operators::{Accumulate, Filter, Input, Inspect, Map, Probe, Binary, Unary};
 use timely::dataflow::operators::aggregation::Aggregate;
+use timely::dataflow::operators::exchange::Exchange;
+use timely::dataflow::operators::generic::operator::Operator;
 use timely::dataflow::operators::input::Handle as InputHandle;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
-use timely::dataflow::operators::exchange::Exchange;
+use timely::dataflow::operators::{Accumulate, Filter, Input, Inspect, Map, Probe};
 use timely::dataflow::Scope;
-use timely::dataflow::scopes::Root;
-use timely::progress::nested::product::Product;
-use timely::progress::timestamp::RootTimestamp;
-use timely_communication::{Allocate, Allocator, WorkerGuards};
+use timely::worker::Worker;
 
-use logformat::{LogRecord, Worker};
-use BuildProgramActivityGraph;
-use {PagOutput, TraverseNoWaiting};
-use output::{DumpPAG, DumpHistogram};
-use input;
+use crate::input;
+use crate::output::{DumpPAG, DumpHistogram};
+use crate::BuildProgramActivityGraph;
+use crate::{PagOutput, TraverseNoWaiting};
+
+use logformat::LogRecord;
 
 use snailtrail::exploration::{BetweennessCentrality, SinglePath};
 use snailtrail::graph::SrcDst;
-
 use snailtrail::hash_code;
 
-use rand::Rng;
+use rand::thread_rng;
 
 #[derive(Clone)]
 pub struct Config {
@@ -72,7 +72,7 @@ struct Summary<T: Abomonation> {
 
 /// Trait defining `from` similarly to `From` but allowed to lose precision.
 trait ImpreciseFrom<T> {
-    fn from(T) -> Self;
+    fn from(value: T) -> Self;
 }
 
 impl<T> ImpreciseFrom<T> for T {
@@ -114,18 +114,18 @@ impl<T: Abomonation + std::ops::Add<Output = T> + Copy> std::ops::AddAssign for 
 /// Remote indicates a cross-worker activity, with source and destination.
 #[derive(PartialEq, Eq, Hash, Abomonation, Clone)]
 enum ActivityWorkers {
-    Local(Worker),
-    Remote(Worker, Worker),
+    Local(logformat::Worker),
+    Remote(logformat::Worker, logformat::Worker),
 }
 
 struct ProbeWrapper {
-    probe: ProbeHandle<Product<RootTimestamp, u64>>,
+    probe: ProbeHandle<u64>,
     name: String,
     current: u64,
 }
 
 impl ProbeWrapper {
-    pub fn new(name: String, probe: ProbeHandle<Product<RootTimestamp, u64>>) -> Self {
+    pub fn new(name: String, probe: ProbeHandle<u64>) -> Self {
         ProbeWrapper {
             probe,
             name,
@@ -134,7 +134,7 @@ impl ProbeWrapper {
     }
 
     pub fn print_and_advance(&mut self) {
-        while !self.probe.less_than(&RootTimestamp::new(self.current)) {
+        while !self.probe.less_than(&self.current) {
             println!("EPOCH {} {:?} {:?}",
                      self.name,
                      self.current,
@@ -149,10 +149,10 @@ impl ProbeWrapper {
     }
 }
 
-fn feed_input(mut input: InputHandle<u64, LogRecord>,
+fn feed_input<A: Allocate>(mut input: InputHandle<u64, LogRecord>,
               input_records: Vec<LogRecord>,
               mut probes: Vec<ProbeWrapper>,
-              computation: &mut Root<Allocator>,
+              computation: &mut Worker<A>,
               window_size_ns: u64,
               epochs: u64) {
     let mut last_probe = probes.pop().expect("last probe has to exist");
@@ -182,7 +182,7 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
             // TODO: This will crash on timestamps < 3
             while last_probe
                       .probe
-                      .less_than(&RootTimestamp::new(input.time().inner - epochs)) {
+                      .less_than(&(input.time() - epochs)) {
                 for probe in &mut probes {
                     probe.print_and_advance();
                 }
@@ -201,7 +201,7 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
     }
     while last_probe
               .probe
-              .less_than(&RootTimestamp::new(input.time().inner)) {
+              .less_than(&(input.time())) {
         for probe in &mut probes {
             probe.print_and_advance();
         }
@@ -218,10 +218,10 @@ fn feed_input(mut input: InputHandle<u64, LogRecord>,
 // Read and decode all log records from a log file and give them as input in a single epoch.  In a
 // real computation we'd read input in the background and allow the computation to progress by
 // continually making steps.
-fn read_and_execute_trace_from_file(log_path: &str,
+fn read_and_execute_trace_from_file<A: Allocate>(log_path: &str,
                                     input: InputHandle<u64, LogRecord>,
                                     probes: Vec<ProbeWrapper>,
-                                    computation: &mut Root<Allocator>,
+                                    computation: &mut Worker<A>,
                                     window_size_ns: u64,
                                     epochs: u64,
                                     message_delay: Option<u64>) {
@@ -247,8 +247,7 @@ pub fn run_dataflow(config: Config) -> Result<WorkerGuards<()>, String> {
                      config.epochs);
         }
 
-        let (input, probes) =
-            computation.dataflow::<u64, _, _>(|scope| build_dataflow(config.clone(), scope));
+        let (input, probes) = computation.dataflow(|scope| build_dataflow(config.clone(), scope));
 
         if computation.index() == 0 {
             let names = vec!["pag", "bc", "sp", "summary", "sp_summary"];
@@ -267,12 +266,11 @@ pub fn run_dataflow(config: Config) -> Result<WorkerGuards<()>, String> {
     })
 }
 
-pub fn build_dataflow<'a, A, S>
+pub fn build_dataflow<S>
     (config: Config,
      scope: &mut S)
-     -> (InputHandle<u64, LogRecord>, Vec<ProbeHandle<Product<RootTimestamp, u64>>>)
-    where A: Allocate,
-          S: Scope + Input<'a, A, u64>
+     -> (InputHandle<S::Timestamp, LogRecord>, Vec<ProbeHandle<S::Timestamp>>)
+    where S: Scope<Timestamp = u64> + Input
 {
     let (input, stream) = scope.new_input();
     if false {
@@ -289,7 +287,7 @@ pub fn build_dataflow<'a, A, S>
         pag_output
             .exchange(|_| 0)
             .inspect_batch(|time, data| {
-                               println!("[EPOCH {}]", time.inner);
+                               println!("[EPOCH {:?}]", time);
                                for datum in data {
                                    println!("  {:?}", datum);
                                }
@@ -311,12 +309,12 @@ pub fn build_dataflow<'a, A, S>
         .count()
         .inspect_batch(move |ts, c| {
             c.first()
-                .map(|c| println!("COUNT {:?} {:?} pag_output {:?}", ts.inner, index, c));
+                .map(|c| println!("COUNT {:?} {:?} pag_output {:?}", ts, index, c));
         });
     if config.verbose > 1 {
         pag_output.inspect_batch(move |ts, cs| for c in cs {
                                      println!("CONTENT {:?} {:?} pag_output {:?}",
-                                              ts.inner,
+                                              ts,
                                               index,
                                               c)
                                  });
@@ -337,12 +335,12 @@ pub fn build_dataflow<'a, A, S>
         .inspect_batch(move |ts, c| {
                            c.first()
                                .map(|c| {
-                                        println!("COUNT {:?} {:?} forward {:?}", ts.inner, index, c)
+                                        println!("COUNT {:?} {:?} forward {:?}", ts, index, c)
                                     });
                        });
     if config.verbose > 1 {
         forward.inspect_batch(move |ts, cs| for c in cs {
-                                  println!("CONTENT {:?} {:?} forward {:?}", ts.inner, index, c)
+                                  println!("CONTENT {:?} {:?} forward {:?}", ts, index, c)
                               });
     }
 
@@ -356,12 +354,12 @@ pub fn build_dataflow<'a, A, S>
             .count()
             .inspect_batch(move |ts, c| {
                 c.first()
-                    .map(|c| println!("COUNT {:?} {:?} backward {:?}", ts.inner, index, c));
+                    .map(|c| println!("COUNT {:?} {:?} backward {:?}", ts, index, c));
             });
         if config.verbose > 1 {
             backward.inspect_batch(move |ts, cs| for c in cs {
                                        println!("CONTENT {:?} {:?} backward {:?}",
-                                                ts.inner,
+                                                ts,
                                                 index,
                                                 c)
                                    });
@@ -379,11 +377,11 @@ pub fn build_dataflow<'a, A, S>
             .count()
             .inspect_batch(move |ts, c| {
                 c.first()
-                    .map(|c| println!("COUNT {:?} {:?} graph {:?}", ts.inner, index, c));
+                    .map(|c| println!("COUNT {:?} {:?} graph {:?}", ts, index, c));
             });
         if config.verbose > 1 {
             graph.inspect_batch(move |ts, cs| for c in cs {
-                                    println!("CONTENT {:?} {:?} graph {:?}", ts.inner, index, c)
+                                    println!("CONTENT {:?} {:?} graph {:?}", ts, index, c)
                                 });
         }
     }
@@ -414,12 +412,12 @@ pub fn build_dataflow<'a, A, S>
         .inspect_batch(move |ts, c| {
                            c.first()
                                .map(|c| {
-                                        println!("COUNT {:?} {:?} bc {:?}", ts.inner, index, c)
+                                        println!("COUNT {:?} {:?} bc {:?}", ts, index, c)
                                     });
                        });
     if config.verbose > 1 {
         bc.inspect_batch(move |ts, cs| for c in cs {
-                             println!("CONTENT {:?} {:?} bc {:?}", ts.inner, index, c)
+                             println!("CONTENT {:?} {:?} bc {:?}", ts, index, c)
                          });
     }
 
@@ -433,8 +431,8 @@ pub fn build_dataflow<'a, A, S>
                            accums
                                .entry(*time.time())
                                .or_insert_with(Vec::new)
-                               .extend_from_slice(data);
-                           notificator.notify_at(time);
+                               .extend_from_slice(&data);
+                           notificator.notify_at(time.retain());
                        });
 
         notificator.for_each(|time, _count, _notify| {
@@ -442,7 +440,8 @@ pub fn build_dataflow<'a, A, S>
                 // The output stream will contain either zero or one element.  In the common
                 // case, we pick a single random edge per epoch and emit it, however, some
                 // epochs are empty and we cannot randonly sample.
-                if let Some(elem) = rand::thread_rng().choose(&accum[..]) {
+                let mut rng = thread_rng();
+                if let Some(elem) = accum[..].choose(&mut rng) {
                     output.session(&time).give(elem.clone());
                 }
             }
@@ -450,13 +449,15 @@ pub fn build_dataflow<'a, A, S>
     });
 
     // Single-path bc
-    let sp = graph.single_path(&seed_edge); //.inspect_ts(move |ts, c| println!("{:?} {:?} Edge: {:?}", ts.inner, index, c));
+    let sp = graph.single_path(&seed_edge); //.inspect_ts(move |ts, c| println!("{:?} {:?} Edge: {:?}", ts, index, c));
 
     let probe_sp_stream = sp.filter(|_| false).exchange(|_| 0);
     let probe_sp = probe_sp_stream.probe();
 
     let mut bc_map = HashMap::new();
     let mut forward_map = HashMap::new();
+    let mut vector1 = Vec::new();
+    let mut vector2 = Vec::new();
     let count = bc.binary_notify(&forward,
                                  pact::Exchange::new(|_| 0),
                                  pact::Exchange::new(|_| 0),
@@ -465,19 +466,21 @@ pub fn build_dataflow<'a, A, S>
                                  move |input1, input2, output, notificator| {
         input1.for_each(|time, data| {
             let bc_entry = bc_map.entry(*time.time()).or_insert_with(HashMap::new);
-            for (d, count) in data.drain(..) {
+            data.swap(&mut vector1);
+            for (d, count) in vector1.drain(..) {
                 *bc_entry
                      .entry(d.src().expect("edge w/o src"))
                      .or_insert(0u64) += count as u64;
             }
-            notificator.notify_at(time);
+            notificator.notify_at(time.retain());
         });
         input2.for_each(|time, data| {
+            data.swap(&mut vector2);
                             forward_map
                                 .entry(*time.time())
                                 .or_insert_with(Vec::new)
-                                .extend(data.drain(..));
-                            notificator.notify_at(time);
+                                .extend(vector2.drain(..));
+                            notificator.notify_at(time.retain());
                         });
         notificator.for_each(|time, _count, _notificator| {
             let mut sum = 0u64;
@@ -500,23 +503,25 @@ pub fn build_dataflow<'a, A, S>
     count.inspect_batch(move |ts, c| {
                             c.first()
                                 .map(|c| {
-                                         println!("COUNT {:?} {:?} paths {:?}", ts.inner, index, c)
+                                         println!("COUNT {:?} {:?} paths {:?}", ts, index, c)
                                      });
                         });
 
     // group aggregates by (activity_type, operator_id, worker_id)
     let probe_summary = {
-        let edge_weight_stream_triples = bc.unary_stream(pact::Pipeline,
-                                                         "MapToSummary",
-                                                         move |input, output| {
+        let mut vector = Vec::new();
+        let edge_weight_stream_triples = bc.unary(pact::Pipeline,
+                                                  "MapToSummary",
+                                                         |_cap, _info| { move |input, output| {
             input.for_each(|time, data| {
+                data.swap(&mut vector);
                 output
                     .session(&time)
-                    .give_iterator(data.drain(..)
+                    .give_iterator(vector.drain(..)
                                        .map(|(edge, bc)| {
                         let w = edge.weight();
                         let window_size_ns = config.window_size_ns;
-                        let window_start_time = time.time().inner;
+                        let window_start_time = time.time();
                         let crosses_start = edge.source_timestamp() == window_start_time * window_size_ns - 1;
                         let crosses_end = edge.destination_timestamp() ==
                             window_start_time * window_size_ns + window_size_ns;
@@ -548,7 +553,8 @@ pub fn build_dataflow<'a, A, S>
                         };
                         (edge_type, summary)
                     }));
-            });
+                });
+            }
         });
         let summary_triples = edge_weight_stream_triples
             .aggregate::<_, Summary<_>, _, _, _>(|_key, val, agg| *agg += val,
@@ -567,7 +573,7 @@ pub fn build_dataflow<'a, A, S>
                                    ActivityWorkers::Remote(src, dst) => format!("{},{}", src, dst),
                                };
                                let data = format!("{},{},{},{},{},{},{},{},{}",
-                                                  ts.inner,
+                                                  ts,
                                                   activity_type,
                                                   operator_id,
                                                   worker_csv,
@@ -604,7 +610,7 @@ pub fn build_dataflow<'a, A, S>
 
     sp_summary.inspect_batch(move |ts, output| for &(t, ref summary) in output {
                                  println!("SP_SUMMARY {:?} {:?} {} {} {} {} {} {}",
-                                          ts.inner,
+                                          ts,
                                           index,
                                           t.0,
                                           t.1,
