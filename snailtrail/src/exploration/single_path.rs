@@ -18,6 +18,7 @@ use timely::dataflow::{Stream, Scope};
 use timely::order::Product;
 use timely::progress::Timestamp;
 use timely::Data;
+use timely::ExchangeData;
 
 use crate::exploration::rand::prelude::SliceRandom;
 use crate::exploration::rand::thread_rng;
@@ -69,7 +70,7 @@ let graph_stream = self; //.concat(&forward_edges); //.concat(&backward_edges);
     }
 }
 
-pub trait TraverseFrom<G: Scope, D1: Data + abomonation::Abomonation, K: Hash + Eq + Copy + Data + Partitioning + 'static>
+pub trait TraverseFrom<G: Scope, D1: ExchangeData, K: Hash + Eq + Copy + Data + Partitioning + 'static>
      {
     /// Explores a graph iteratively based on a frontier stream.
     ///
@@ -92,7 +93,7 @@ pub trait TraverseFrom<G: Scope, D1: Data + abomonation::Abomonation, K: Hash + 
 
 impl<TOuter: Timestamp,
      G: Scope<Timestamp = Product<TOuter, u32>>,
-     D1: Data + Debug + Hash + Eq + Send + std::marker::Sync + abomonation::Abomonation,
+     D1: ExchangeData,
      K: Hash + Eq + Copy + Data + Partitioning + Debug + 'static> TraverseFrom<G, D1, K>
     for Stream<G, D1> {
     fn traverse_from<LG, LJ, TO, TS>(&self,
