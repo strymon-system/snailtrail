@@ -11,15 +11,14 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use timely::dataflow::{Scope, Stream};
-use timely::dataflow::operators::{Filter, Map, Unary, Inspect};
+use timely::dataflow::operators::{Filter, Map, Inspect};
+use timely::dataflow::operators::generic::operator::Operator;
 use timely::dataflow::operators::aggregation::Aggregate;
 use timely::dataflow::channels::pact::Exchange;
-use timely::progress::nested::product::Product;
-use timely::progress::timestamp::RootTimestamp;
 
 use logformat::{LogRecord, ActivityType, EventType};
 
-use {PagOutput, PagEdge, PagNode};
+use crate::{PagOutput, PagEdge, PagNode};
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -27,8 +26,8 @@ use std::io::prelude::*;
 /// Pairs up events local to a single worker timeline and closes gaps by merging events or adding
 /// filler edges.
 pub trait DumpPAG<S: Scope> {
-    fn dump_graph(&self, prefix: &str);
-    fn dump_msgpack(&self, prefix: &str);
+    fn dump_graph(&self, prefix: &str) -> Stream<S, PagOutput>;
+    fn dump_msgpack(&self, prefix: &str) -> Stream<S, PagOutput>;
 }
 
 pub trait DumpPAGFormatting {
@@ -50,28 +49,28 @@ impl DumpPAGFormatting for PagEdge {
     }
 }
 
-impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> DumpPAG<S> for Stream<S, PagOutput>
-    where S::Timestamp: std::fmt::Debug + Hash
-{
-    fn dump_graph(&self, prefix: &str) {
+impl<S: Scope<Timestamp = u64>> DumpPAG<S> for Stream<S, PagOutput> {
+    fn dump_graph(&self, prefix: &str) -> Stream<S, PagOutput> {
         let prefix = prefix.to_owned();
         let mut pag_per_epoch = HashMap::new();
-        self.unary_notify::<(), _, _>(Exchange::new(|_| 0), "Dump graph", vec![], move |input, _output, notificator| {
+        let mut vector = Vec::new();
+        self.unary_notify(Exchange::new(|_| 0), "Dump graph", vec![], move |input, _output, notificator| {
             // Organize all data by time and then according to worker ID
             input.for_each(|time, data| {
                 let epoch_slot = pag_per_epoch.entry(*time.time())
                     .or_insert_with(Vec::new);
-                for pag in data.drain(..) {
+                data.swap(&mut vector);
+                for pag in vector.drain(..) {
                     if let PagOutput::Edge(record) = pag {
                         epoch_slot.push(record);
                     }
                 }
-                notificator.notify_at(time);
+                notificator.notify_at(time.retain());
             });
             // Sequentially assemble the edges for each worker timeline by pairing up log records
             notificator.for_each(|time, _count, _notify| {
                 if let Some(mut timelines) = pag_per_epoch.remove(time.time()) {
-                    let path = format!("{}graph_{:?}.dot", prefix, time.time().inner);
+                    let path = format!("{}graph_{:?}.dot", prefix, time.time());
                     let path = std::path::Path::new(&path);
                     if let Some(dir) = path.parent() {
                         std::fs::DirBuilder::new().recursive(true).create(dir).unwrap();
@@ -116,28 +115,30 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> DumpPAG<S> for Stream<S,
                 }
             });
 
-        });
+        })
     }
 
-    fn dump_msgpack(&self, prefix: &str) {
+    fn dump_msgpack(&self, prefix: &str) -> Stream<S, PagOutput> {
         let prefix = prefix.to_owned();
         let mut pag_per_epoch = HashMap::new();
-        self.unary_notify::<(), _, _>(Exchange::new(|_| 0), "Dump graph to msgpack", vec![], move |input, _output, notificator| {
+        let mut vector = Vec::new();
+        self.unary_notify(Exchange::new(|_| 0), "Dump graph to msgpack", vec![], move |input, _output, notificator| {
             // Organize all data by time and then according to worker ID
             input.for_each(|time, data| {
                 let epoch_slot = pag_per_epoch.entry(*time.time())
                     .or_insert_with(Vec::new);
-                for pag in data.drain(..) {
+                data.swap(&mut vector);
+                for pag in vector.drain(..) {
                     if let PagOutput::Edge(record) = pag {
                         epoch_slot.push(record);
                     }
                 }
-                notificator.notify_at(time);
+                notificator.notify_at(time.retain());
             });
             // Sequentially assemble the edges for each worker timeline by pairing up log records
             notificator.for_each(|time, _count, _notify| {
                 if let Some(mut timelines) = pag_per_epoch.remove(time.time()) {
-                    let path = format!("{}pag_{:?}.msgpack", prefix, time.time().inner);
+                    let path = format!("{}pag_{:?}.msgpack", prefix, time.time());
                     let path = std::path::Path::new(&path);
                     if let Some(dir) = path.parent() {
                         std::fs::DirBuilder::new().recursive(true).create(dir).unwrap();
@@ -197,7 +198,7 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> DumpPAG<S> for Stream<S,
                 }
             });
 
-        });
+        })
     }
 }
 

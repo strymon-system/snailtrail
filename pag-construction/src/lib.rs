@@ -6,18 +6,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern crate abomonation;
 #[macro_use]
 extern crate abomonation_derive;
-extern crate logformat;
-extern crate rand;
-extern crate rayon;
-extern crate snailtrail;
-extern crate time;
-extern crate timely;
-extern crate timely_communication;
 
-use logformat::{LogRecord, ActivityType, EventType, Worker, Timestamp, OperatorId};
+use logformat::{LogRecord, ActivityType, EventType, Worker, OperatorId};
 
 use snailtrail::graph::{Partitioning, SrcDst};
 use snailtrail::exploration::Capacity;
@@ -28,10 +20,9 @@ use std::hash::Hash;
 use timely::ExchangeData;
 use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::aggregation::Aggregate;
-use timely::dataflow::operators::{Concat, Filter, Map, Unary, Partition};
+use timely::dataflow::operators::generic::operator::Operator;
+use timely::dataflow::operators::{Concat, Filter, Map, Partition};
 use timely::dataflow::{Scope, Stream};
-use timely::progress::nested::product::Product;
-use timely::progress::timestamp::RootTimestamp;
 use snailtrail::hash_code;
 
 pub mod dataflow;
@@ -41,7 +32,7 @@ pub mod output;
 /// A node in the activity graph
 #[derive(Abomonation, Clone, Debug, PartialEq, Hash, Eq, Copy, Ord, PartialOrd)]
 pub struct PagNode {
-    pub timestamp: Timestamp,
+    pub timestamp: logformat::Timestamp,
     pub worker_id: Worker,
 }
 
@@ -146,7 +137,7 @@ impl PagOutput {
         }
     }
 
-    pub fn source_timestamp(&self) -> Timestamp {
+    pub fn source_timestamp(&self) -> logformat::Timestamp {
         match *self {
             PagOutput::Edge(ref e) => e.source.timestamp,
             PagOutput::StartNode(ref e) |
@@ -154,7 +145,7 @@ impl PagOutput {
         }
     }
 
-    pub fn destination_timestamp(&self) -> Timestamp {
+    pub fn destination_timestamp(&self) -> logformat::Timestamp {
         match *self {
             PagOutput::Edge(ref e) => e.destination.timestamp,
             PagOutput::StartNode(ref e) |
@@ -236,7 +227,7 @@ impl Timeline {
         }
     }
 
-    fn get_sort_key(&self) -> (Timestamp, Timestamp) {
+    fn get_sort_key(&self) -> (logformat::Timestamp, logformat::Timestamp) {
         match *self {
             Timeline::Local(ref edge) => (edge.source.timestamp, edge.destination.timestamp),
             Timeline::Remote(ref rec) => (rec.timestamp, 0),
@@ -264,8 +255,8 @@ impl<S: Scope, D: ExchangeData> MapEpoch<S, D> for Stream<S, D>
                                accums
                                    .entry(time.time().clone())
                                    .or_insert_with(Vec::new)
-                                   .extend_from_slice(data);
-                               notificator.notify_at(time);
+                                   .extend_from_slice(&data);
+                               notificator.notify_at(time.retain());
                            });
 
             notificator.for_each(|time, _count, _notify| if let Some(mut accum) =
@@ -280,7 +271,7 @@ impl<S: Scope, D: ExchangeData> MapEpoch<S, D> for Stream<S, D>
 fn create_initial_pag_edges(worker_id: Worker,
                             mut timeline: Vec<LogRecord>,
                             window_size_ns: u64,
-                            window_start_time: Timestamp)
+                            window_start_time: logformat::Timestamp)
                             -> Vec<Timeline> {
     // We insert two records just before and after the window boundaries.
     // This will cause the analysis later on to include potential gaps between
@@ -634,9 +625,7 @@ trait WorkerTimelines<S: Scope> {
                               -> Stream<S, PagOutput>;
 }
 
-impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for Stream<S, LogRecord>
-    where S::Timestamp: Hash
-{
+impl<S: Scope<Timestamp = u64>> WorkerTimelines<S> for Stream<S, LogRecord> {
     fn build_worker_timelines(&self,
                               unknown_threshold: u64,
                               window_size_ns: u64,
@@ -644,17 +633,19 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for S
                               -> Stream<S, PagOutput> {
         let mut timelines_per_epoch = HashMap::new();
         let exchange = Exchange::new(|record: &LogRecord| record.local_worker as u64);
+        let mut vector = Vec::new();
         self.unary_notify(exchange, "WorkerTimelines", vec![], move |input, output, notificator| {
             // Organize all data by time and then according to worker ID
             input.for_each(|time, data| {
                 let epoch_slot = timelines_per_epoch.entry(*time.time())
                     .or_insert_with(HashMap::new);
-                for record in data.drain(..) {
+                data.swap(&mut vector);
+                for record in vector.drain(..) {
                     epoch_slot.entry(record.local_worker)
                         .or_insert_with(Vec::new)
                         .push(record);
                 }
-                notificator.notify_at(time);
+                notificator.notify_at(time.retain());
             });
             // Sequentially assemble the edges for each worker timeline by pairing up log records
             notificator.for_each(|time, _count, _notify| {
@@ -664,7 +655,7 @@ impl<S: Scope<Timestamp = Product<RootTimestamp, u64>>> WorkerTimelines<S> for S
                         // (quantization) to eliminate gaps and merge log records which are in
                         // close proximity in terms of event time.
 
-                        let initial_timeline = create_initial_pag_edges(worker_id, raw_timeline, window_size_ns, time.time().inner);
+                        let initial_timeline = create_initial_pag_edges(worker_id, raw_timeline, window_size_ns, *time.time());
 
                         let final_timeline = connect_pag_and_apply_wait_analysis(initial_timeline, unknown_threshold, insert_waitig_edges);
 
@@ -702,9 +693,7 @@ trait PairUpEvents<S: Scope> {
         where F: Fn(&LogRecord, &LogRecord) -> () + 'static;
 }
 
-impl<S: Scope<Timestamp=Product<RootTimestamp, u64>>, K: ExchangeData+Eq+Hash> PairUpEvents<S> for Stream<S, (K, LogRecord)>
-    where S::Timestamp: Hash
-{
+impl<S: Scope<Timestamp = u64>, K: ExchangeData+Eq+Hash> PairUpEvents<S> for Stream<S, (K, LogRecord)> {
     fn pair_up_events(&self, start_type: EventType, end_type: EventType, window_size_ns: u64) -> Stream<S, Timeline> {
 self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _recv| {
 /* no assertion */
@@ -729,10 +718,12 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
             |key| hash_code(key)
         );
 
+        let mut vector = Vec::new();
         paired.unary_notify(Pipeline, "assemble messages", vec!(), move |input, output, _| {
             input.for_each(|time, data| {    // emit
                 let mut session = output.session(&time);
-                for (_, agg) in data.drain(..) {
+                data.swap(&mut vector);
+                for (_, agg) in vector.drain(..) {
                     let ends = agg.1;
                     match agg.0 {
                         Some(start) => {
@@ -744,7 +735,7 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
                                         worker_id: start.local_worker,
                                     },
                                     destination: PagNode {
-                                        timestamp: time.time().inner * window_size_ns + window_size_ns,
+                                        timestamp: time.time() * window_size_ns + window_size_ns,
                                         worker_id: start.remote_worker.expect("comm w/o remote worker"),
                                     },
                                     edge_type: start.activity_type,
@@ -752,7 +743,7 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
                                     traverse: TraversalType::Undefined,
                                 }));
                                 session.give(Timeline::Remote(LogRecord {
-                                    timestamp: time.time().inner * window_size_ns + window_size_ns,
+                                    timestamp: time.time() * window_size_ns + window_size_ns,
                                     local_worker: start.remote_worker.unwrap(),
                                     remote_worker: Some(start.local_worker),
                                     ..start
@@ -791,7 +782,7 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
                             for end in ends {
                                 session.give(Timeline::Local(PagEdge {
                                     source: PagNode {
-                                        timestamp: time.time().inner * window_size_ns- 1,
+                                        timestamp: time.time() * window_size_ns- 1,
                                         worker_id: end.remote_worker.expect("comm w/o remote worker"),
                                     },
                                     destination: PagNode {
@@ -803,7 +794,7 @@ self.pair_up_events_and_check(start_type, end_type, window_size_ns, |_sent, _rec
                                     traverse: TraversalType::Undefined,
                                 }));
                                 session.give(Timeline::Remote(LogRecord {
-                                    timestamp: time.time().inner * window_size_ns - 1,
+                                    timestamp: time.time() * window_size_ns - 1,
                                     local_worker: end.remote_worker.unwrap(),
                                     remote_worker: Some(end.local_worker),
                                     ..end
@@ -832,9 +823,8 @@ pub trait BuildProgramActivityGraph<S: Scope> {
                                     -> Stream<S, PagOutput>;
 }
 
-impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
-    where S: Scope<Timestamp = Product<RootTimestamp, u64>>,
-          S::Timestamp: Hash
+impl<S> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
+     where S: Scope<Timestamp = u64>
 {
     fn build_program_activity_graph(&self,
                                     threshold: u64,
@@ -905,17 +895,19 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
 
         let exchange = Exchange::new(|e: &PagOutput| u64::from(e.destination_worker()));
         let mut timelines_per_epoch = HashMap::new();
-        let result = result.unary_notify(exchange, "add traversal info", vec![], move |input, output, notificator| {
+        let mut vector = Vec::new();
+        result.unary_notify(exchange, "add traversal info", vec![], move |input, output, notificator| {
             // Organize all data by time and then according to worker ID
             input.for_each(|time, data| {
                 let epoch_slot = timelines_per_epoch.entry(*time.time())
                     .or_insert_with(HashMap::new);
-                for record in data.drain(..) {
+                data.swap(&mut vector);
+                for record in vector.drain(..) {
                     epoch_slot.entry(record.destination_worker())
                         .or_insert_with(Vec::new)
                         .push(record);
                 }
-                notificator.notify_at(time);
+                notificator.notify_at(time.retain());
             });
             // Sequentially assemble the edges for each worker timeline by pairing up log records
             notificator.for_each(|time, _count, _notify| {
@@ -950,7 +942,6 @@ impl<S: Scope> BuildProgramActivityGraph<S> for Stream<S, LogRecord>
                     }
                 }
             });
-        });
-        result
+        })
     }
 }

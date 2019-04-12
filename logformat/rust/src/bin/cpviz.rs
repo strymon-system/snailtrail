@@ -6,10 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern crate logformat;
 #[macro_use]
 extern crate json;
-extern crate clap;
 
 use std::fs::File;
 use std::io::{Result, BufReader, BufWriter, Write};
